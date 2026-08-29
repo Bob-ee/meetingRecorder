@@ -19,6 +19,10 @@
     <string>Meeting Recorder records your microphone during meetings so your side of the conversation can be transcribed on this Mac.</string>
     <key>NSAudioCaptureUsageDescription</key>
     <string>Meeting Recorder captures the audio played by meeting apps (Zoom, Google Meet, Slack) so the other participants can be transcribed on this Mac.</string>
+    <key>NSCalendarsFullAccessUsageDescription</key>
+    <string>Meeting Recorder adds follow-up meetings and action-item deadlines from your notes to your calendar when you ask it to.</string>
+    <key>NSRemindersFullAccessUsageDescription</key>
+    <string>Meeting Recorder adds action items to Reminders when you ask it to.</string>
     <key>CFBundleDocumentTypes</key>
     <array>
         <dict>

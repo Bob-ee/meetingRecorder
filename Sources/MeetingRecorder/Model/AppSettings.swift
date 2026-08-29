@@ -17,6 +17,8 @@ final class AppSettings: ObservableObject {
     /// `mh1:<host>:<port>:<token>` from `meetinghub setup` / `meetinghub pair`.
     @Published var hubPairingCode: String { didSet { defaults.set(hubPairingCode, forKey: "hubPairingCode") } }
     @Published var hubLastSync: Double { didSet { defaults.set(hubLastSync, forKey: "hubLastSync") } }
+    /// The calendar events were last added to (EventKit identifier); empty = the system default.
+    @Published var calendarID: String { didSet { defaults.set(calendarID, forKey: "calendarID") } }
 
     init() {
         storageRoot = defaults.string(forKey: "storageRoot") ?? "~/Meetings"
@@ -32,6 +34,7 @@ final class AppSettings: ObservableObject {
         processingMode = defaults.string(forKey: "processingMode") ?? ProcessingMode.local.rawValue
         hubPairingCode = defaults.string(forKey: "hubPairingCode") ?? ""
         hubLastSync = defaults.double(forKey: "hubLastSync")
+        calendarID = defaults.string(forKey: "calendarID") ?? ""
     }
 
     var mode: ProcessingMode { ProcessingMode(rawValue: processingMode) ?? .local }

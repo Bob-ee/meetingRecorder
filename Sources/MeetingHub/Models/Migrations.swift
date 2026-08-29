@@ -127,3 +127,21 @@ struct CreateSchemaV1: AsyncMigration {
         }
     }
 }
+
+/// Calendar support: suggested events on meetings, resolved deadlines and "in calendar" on action items.
+struct AddCalendarFieldsV2: AsyncMigration {
+    func prepare(on db: Database) async throws {
+        try await db.schema(MeetingModel.schema)
+            .field("events", .string)
+            .update()
+        try await db.schema(ActionItemModel.schema)
+            .field("due_date", .string)
+            .field("calendar_added_at", .datetime)
+            .update()
+    }
+
+    func revert(on db: Database) async throws {
+        try await db.schema(MeetingModel.schema).deleteField("events").update()
+        try await db.schema(ActionItemModel.schema).deleteField("due_date").deleteField("calendar_added_at").update()
+    }
+}

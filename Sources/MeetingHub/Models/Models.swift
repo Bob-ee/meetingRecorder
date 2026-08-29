@@ -87,6 +87,8 @@ final class MeetingModel: Model, @unchecked Sendable {
     @OptionalField(key: "error_message") var errorMessage: String?
     @Field(key: "speaker_names") var speakerNamesJSON: String
     @Field(key: "notes") var notes: String
+    /// Suggested calendar events, as JSON (nil on rows from before they existed).
+    @OptionalField(key: "events") var eventsJSON: String?
     @Timestamp(key: "created_at", on: .create) var createdAt: Date?
     @Timestamp(key: "updated_at", on: .update) var updatedAt: Date?
     @Children(for: \.$meeting) var actionItems: [ActionItemModel]
@@ -95,6 +97,11 @@ final class MeetingModel: Model, @unchecked Sendable {
     var speakerNames: [String: String] {
         get { (try? JSONDecoder().decode([String: String].self, from: Data(speakerNamesJSON.utf8))) ?? [:] }
         set { speakerNamesJSON = String(decoding: (try? JSONEncoder().encode(newValue)) ?? Data("{}".utf8), as: UTF8.self) }
+    }
+
+    var events: [MeetingEvent] {
+        get { eventsJSON.flatMap { try? jsonDecoder.decode([MeetingEvent].self, from: Data($0.utf8)) } ?? [] }
+        set { eventsJSON = newValue.isEmpty ? nil : String(decoding: (try? wireEncoder.encode(newValue)) ?? Data("[]".utf8), as: UTF8.self) }
     }
 
     var meetingStatus: MeetingStatus {
@@ -107,7 +114,7 @@ final class MeetingModel: Model, @unchecked Sendable {
         let loaded = items ?? $actionItems.value ?? []
         return Meeting(id: id ?? UUID(), projectID: $project.id, title: title, titleIsAuto: titleIsAuto, startedAt: startedAt,
                        durationSeconds: durationSeconds, status: meetingStatus, source: MeetingSource(rawValue: source) ?? .live,
-                       actionItems: loaded.sorted { $0.position < $1.position }.map(\.dto),
+                       actionItems: loaded.sorted { $0.position < $1.position }.map(\.dto), events: events,
                        speakerNames: speakerNames, errorMessage: errorMessage, importedFileName: importedFileName,
                        updatedAt: updatedAt ?? createdAt ?? startedAt)
     }
@@ -120,17 +127,29 @@ final class ActionItemModel: Model, @unchecked Sendable {
     @Field(key: "task") var task: String
     @OptionalField(key: "owner") var owner: String?
     @OptionalField(key: "due") var due: String?
+    /// `EventDate` as JSON.
+    @OptionalField(key: "due_date") var dueDateJSON: String?
     @Field(key: "done") var done: Bool
     @Field(key: "is_manual") var isManual: Bool
     @Field(key: "position") var position: Int
+    @OptionalField(key: "calendar_added_at") var calendarAddedAt: Date?
     @Timestamp(key: "updated_at", on: .update) var updatedAt: Date?
     init() {}
     init(_ item: ActionItem, meetingID: UUID, position: Int) {
         id = item.id; $meeting.id = meetingID; task = item.task; owner = item.owner; due = item.due
-        done = item.done; isManual = item.isManual; self.position = position
+        dueDate = item.dueDate; done = item.done; isManual = item.isManual; self.position = position
+        calendarAddedAt = item.calendarAddedAt
     }
 
-    var dto: ActionItem { ActionItem(id: id ?? UUID(), task: task, owner: owner, due: due, done: done, isManual: isManual) }
+    var dueDate: EventDate? {
+        get { dueDateJSON.flatMap { try? jsonDecoder.decode(EventDate.self, from: Data($0.utf8)) } }
+        set { dueDateJSON = newValue.flatMap { try? wireEncoder.encode($0) }.map { String(decoding: $0, as: UTF8.self) } }
+    }
+
+    var dto: ActionItem {
+        ActionItem(id: id ?? UUID(), task: task, owner: owner, due: due, dueDate: dueDate, done: done, isManual: isManual,
+                   calendarAddedAt: calendarAddedAt)
+    }
 }
 
 final class TranscriptModel: Model, @unchecked Sendable {

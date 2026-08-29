@@ -49,6 +49,8 @@ logs/hub.log
 `users → workspaces → projects → meetings → {action_items, transcripts, summaries, audio_files, jobs}`,
 plus `device_tokens` (hashed, revocable, per device) and `settings` (per workspace; the summarizer block is
 AES-GCM encrypted). There is one user and one workspace today. Nothing about billing exists.
+`meetings.events` holds the suggested calendar events as JSON (with the user's added/dismissed state);
+`action_items.due_date` is the resolved deadline and `calendar_added_at` when it went into a calendar.
 
 **Auth**: `Authorization: Bearer <device token>` on every `/api/v1` call except `/health`. Tokens are 256-bit
 random, stored as SHA-256. Before auth, `RemoteAllowlistMiddleware` only admits localhost, the Tailscale range
@@ -75,6 +77,13 @@ client sends the placeholder back):
 
 Any free-text reply goes through `JSONRepair` (fences, prose, raw newlines in strings, trailing commas).
 
+**Dates.** The prompt states the meeting's weekday, date, time and zone, and asks for deadlines and events as
+local strings (`2026-09-04`, or `2026-09-04T15:00` when a time was said) — models resolve "next Thursday" well
+and UTC offsets badly. `LocalDate.parse` reads them on the same machine that rendered the prompt, drops anything
+before the meeting day or years out, and stores an `EventDate` (instant + whether a time was given + the zone it
+was resolved in), so a whole-day event stays on its day on every device. Events and resolved deadlines are
+merged into the meeting like action items are, keeping what the user did with them (added, dismissed).
+
 **Transcription** on the hub is the same `TranscriptionService` the app uses (Parakeet TDT v3 + offline
 diarization, CoreML). On Linux that target compiles to a stub that reports "unavailable" — the slot is there for a
 Linux engine (sherpa-onnx) or a cloud provider.
@@ -89,7 +98,7 @@ GET    /projects · POST /projects · GET|PATCH|DELETE /projects/:id
 GET    /meetings?project=&since=&limit=     Meeting[] (action items embedded)
 POST   /meetings                            CreateMeetingRequest (client may supply the id → idempotent)
 GET    /meetings/:id                        MeetingDetail (transcript, summary, notes, audio, latest job)
-PATCH  /meetings/:id                        title, titleIsAuto, notes, speakerNames, projectID, …
+PATCH  /meetings/:id                        title, titleIsAuto, notes, speakerNames, projectID, events, …
 DELETE /meetings/:id
 PUT    /meetings/:id/audio/:kind            raw body, streamed to disk; X-File-Name, X-Content-SHA256
 GET    /meetings/:id/audio · /audio/:kind
@@ -112,7 +121,7 @@ The app stays offline-first. Its local folder remains the UI's source of truth; 
    are uploaded (resumable by re-PUT; checksum-verified) → `process` is called. Status: `uploading → queued`.
 2. The app follows `/events` (falling back to polling) and mirrors `transcribing → summarizing → ready` locally,
    then pulls the transcript, summary and action items into its files.
-3. Local edits (title, notes, action items, speaker names, project) are pushed as patches; edits made elsewhere
+3. Local edits (title, notes, action items, speaker names, project, calendar events) are pushed as patches; edits made elsewhere
    (phone, web) arrive through `GET /meetings?since=` and events. Last write wins per field.
 4. No network? The meeting waits in `uploading` with "Waiting for the hub…" and retries with backoff; nothing is lost.
 5. Projects are matched by id, and on first connect by name: a local "Inbox" adopts the hub's "Inbox" id instead of

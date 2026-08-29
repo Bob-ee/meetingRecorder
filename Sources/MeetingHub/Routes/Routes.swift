@@ -243,6 +243,7 @@ func meetingRoutes(_ r: RoutesBuilder) {
         if let names = body.speakerNames { meeting.speakerNames = names }
         if let d = body.durationSeconds { meeting.durationSeconds = d }
         if let s = body.startedAt { meeting.startedAt = s }
+        if let events = body.events { meeting.events = events }
         if let pid = body.projectID, pid != meeting.$project.id {
             let target = try await HubQueries.project(req, id: pid)
             meeting.$project.id = target.id!
@@ -319,7 +320,8 @@ func meetingRoutes(_ r: RoutesBuilder) {
         guard let summary = try await SummaryModel.query(on: req.db).filter(\.$meeting.$id == meeting.id!).first() else {
             throw Abort(.notFound, reason: "no summary yet")
         }
-        return HubQueries.markdown(MeetingDocuments.summaryExport(summaryMarkdown: summary.markdown, actionItems: meeting.dto().actionItems), fileName: "summary.md")
+        return HubQueries.markdown(MeetingDocuments.summaryExport(summaryMarkdown: summary.markdown, actionItems: meeting.dto().actionItems,
+                                                                  events: meeting.events), fileName: "summary.md")
     }
 
     r.get("meetings", ":id", "export.md") { req -> Response in

@@ -19,16 +19,58 @@ public struct Project: Identifiable, Codable, Hashable, Sendable {
     }
 }
 
+/// A moment the model pinned down from the transcript ("Friday" → an actual day). `hasTime` false means a whole day.
+/// `timeZone` is where it was resolved, so a whole day stays the same calendar day on every device.
+public struct EventDate: Codable, Hashable, Sendable {
+    public var date: Date
+    public var hasTime: Bool
+    public var timeZone: String
+
+    public init(date: Date, hasTime: Bool, timeZone: TimeZone = .current) {
+        self.date = date; self.hasTime = hasTime; self.timeZone = timeZone.identifier
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        date = try c.decode(Date.self, forKey: .date)
+        hasTime = try c.decodeIfPresent(Bool.self, forKey: .hasTime) ?? false
+        timeZone = try c.decodeIfPresent(String.self, forKey: .timeZone) ?? TimeZone.current.identifier
+    }
+
+    public var tz: TimeZone { TimeZone(identifier: timeZone) ?? .current }
+
+    /// Year/month/day (plus hour/minute when timed) in the zone the date was resolved in.
+    public var components: DateComponents {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = tz
+        return cal.dateComponents(hasTime ? [.year, .month, .day, .hour, .minute] : [.year, .month, .day], from: date)
+    }
+
+    /// The same calendar day (and time) expressed in another zone — midnight there for whole days.
+    public func date(in zone: TimeZone) -> Date {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = zone
+        return cal.date(from: components) ?? date
+    }
+}
+
 public struct ActionItem: Identifiable, Codable, Hashable, Sendable {
     public var id: UUID
     public var task: String
     public var owner: String?
+    /// The deadline as it was said ("Friday", "end of month").
     public var due: String?
+    /// That deadline resolved to a day (and time, if one was given), when the model could pin it down.
+    public var dueDate: EventDate?
     public var done: Bool
     public var isManual: Bool
+    /// When the user put this item in their calendar or reminders.
+    public var calendarAddedAt: Date?
 
-    public init(id: UUID = UUID(), task: String, owner: String? = nil, due: String? = nil, done: Bool = false, isManual: Bool = false) {
-        self.id = id; self.task = task; self.owner = owner; self.due = due; self.done = done; self.isManual = isManual
+    public init(id: UUID = UUID(), task: String, owner: String? = nil, due: String? = nil, dueDate: EventDate? = nil,
+                done: Bool = false, isManual: Bool = false, calendarAddedAt: Date? = nil) {
+        self.id = id; self.task = task; self.owner = owner; self.due = due; self.dueDate = dueDate
+        self.done = done; self.isManual = isManual; self.calendarAddedAt = calendarAddedAt
     }
 
     public init(from decoder: Decoder) throws {
@@ -37,9 +79,55 @@ public struct ActionItem: Identifiable, Codable, Hashable, Sendable {
         task = try c.decodeIfPresent(String.self, forKey: .task) ?? ""
         owner = try c.decodeIfPresent(String.self, forKey: .owner)
         due = try c.decodeIfPresent(String.self, forKey: .due)
+        dueDate = try? c.decodeIfPresent(EventDate.self, forKey: .dueDate)
         done = try c.decodeIfPresent(Bool.self, forKey: .done) ?? false
         isManual = try c.decodeIfPresent(Bool.self, forKey: .isManual) ?? false
+        calendarAddedAt = try? c.decodeIfPresent(Date.self, forKey: .calendarAddedAt)
     }
+
+    /// The deadline for display: the resolved day when there is one, else the words that were used.
+    public var dueLabel: String? {
+        if let dueDate { return Fmt.when(dueDate, end: nil, style: .short) }
+        if let due, !due.isEmpty { return due }
+        return nil
+    }
+}
+
+/// Something the model found a date for in the conversation — a follow-up call, a demo, a launch, a trip — offered
+/// to the user as a one-click calendar event. Lives with the meeting like action items do.
+public struct MeetingEvent: Identifiable, Codable, Hashable, Sendable {
+    public var id: UUID
+    public var title: String
+    public var start: EventDate
+    /// Only meaningful when `start.hasTime`.
+    public var end: Date?
+    public var location: String?
+    /// One line on what was said, so the suggestion is checkable without the transcript.
+    public var context: String?
+    /// When the user put it in their calendar.
+    public var addedAt: Date?
+    /// Hidden by the user.
+    public var dismissed: Bool
+
+    public init(id: UUID = UUID(), title: String, start: EventDate, end: Date? = nil, location: String? = nil,
+                context: String? = nil, addedAt: Date? = nil, dismissed: Bool = false) {
+        self.id = id; self.title = title; self.start = start; self.end = end; self.location = location
+        self.context = context; self.addedAt = addedAt; self.dismissed = dismissed
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        title = try c.decodeIfPresent(String.self, forKey: .title) ?? "Event"
+        start = try c.decode(EventDate.self, forKey: .start)
+        end = try? c.decodeIfPresent(Date.self, forKey: .end)
+        location = try? c.decodeIfPresent(String.self, forKey: .location)
+        context = try? c.decodeIfPresent(String.self, forKey: .context)
+        addedAt = try? c.decodeIfPresent(Date.self, forKey: .addedAt)
+        dismissed = try c.decodeIfPresent(Bool.self, forKey: .dismissed) ?? false
+    }
+
+    public var isAllDay: Bool { !start.hasTime }
 }
 
 public enum MeetingStatus: String, Codable, Sendable, CaseIterable {
@@ -80,6 +168,8 @@ public struct Meeting: Identifiable, Codable, Hashable, Sendable {
     public var status: MeetingStatus
     public var source: MeetingSource
     public var actionItems: [ActionItem]
+    /// Dates the summary found in the conversation, offered as calendar events.
+    public var events: [MeetingEvent]
     public var speakerNames: [String: String]
     public var errorMessage: String?
     public var importedFileName: String?
@@ -87,11 +177,12 @@ public struct Meeting: Identifiable, Codable, Hashable, Sendable {
 
     public init(id: UUID = UUID(), projectID: UUID, title: String, titleIsAuto: Bool = true,
                 startedAt: Date = Date(), durationSeconds: Double = 0, status: MeetingStatus = .recorded,
-                source: MeetingSource = .live, actionItems: [ActionItem] = [], speakerNames: [String: String] = [:],
-                errorMessage: String? = nil, importedFileName: String? = nil, updatedAt: Date? = nil) {
+                source: MeetingSource = .live, actionItems: [ActionItem] = [], events: [MeetingEvent] = [],
+                speakerNames: [String: String] = [:], errorMessage: String? = nil, importedFileName: String? = nil,
+                updatedAt: Date? = nil) {
         self.id = id; self.projectID = projectID; self.title = title; self.titleIsAuto = titleIsAuto
         self.startedAt = startedAt; self.durationSeconds = durationSeconds; self.status = status
-        self.source = source; self.actionItems = actionItems; self.speakerNames = speakerNames
+        self.source = source; self.actionItems = actionItems; self.events = events; self.speakerNames = speakerNames
         self.errorMessage = errorMessage; self.importedFileName = importedFileName
         self.updatedAt = updatedAt ?? startedAt
     }
@@ -107,6 +198,7 @@ public struct Meeting: Identifiable, Codable, Hashable, Sendable {
         status = try c.decodeIfPresent(MeetingStatus.self, forKey: .status) ?? .recorded
         source = try c.decodeIfPresent(MeetingSource.self, forKey: .source) ?? .live
         actionItems = try c.decodeIfPresent([ActionItem].self, forKey: .actionItems) ?? []
+        events = (try? c.decodeIfPresent([MeetingEvent].self, forKey: .events)) ?? []
         speakerNames = try c.decodeIfPresent([String: String].self, forKey: .speakerNames) ?? [:]
         errorMessage = try c.decodeIfPresent(String.self, forKey: .errorMessage)
         importedFileName = try c.decodeIfPresent(String.self, forKey: .importedFileName)
@@ -114,6 +206,8 @@ public struct Meeting: Identifiable, Codable, Hashable, Sendable {
     }
 
     public var openActionItems: [ActionItem] { actionItems.filter { !$0.done } }
+    /// Suggested events the user hasn't hidden, soonest first.
+    public var upcomingEvents: [MeetingEvent] { events.filter { !$0.dismissed }.sorted { $0.start.date < $1.start.date } }
 
     public func displayName(forSpeaker speaker: String) -> String {
         speakerNames[speaker] ?? speaker
@@ -147,9 +241,13 @@ public struct MeetingSummary: Codable, Sendable {
         public var owner: String?
         public var task: String
         public var due: String?
+        /// `YYYY-MM-DD` or `YYYY-MM-DDTHH:MM` in the summarizing machine's zone; see `LocalDate.parse`.
+        public var dueDate: String?
 
-        public init(owner: String? = nil, task: String, due: String? = nil) {
-            self.owner = owner; self.task = task; self.due = due
+        enum CodingKeys: String, CodingKey { case owner, task, due; case dueDate = "due_date" }
+
+        public init(owner: String? = nil, task: String, due: String? = nil, dueDate: String? = nil) {
+            self.owner = owner; self.task = task; self.due = due; self.dueDate = dueDate
         }
 
         public init(from decoder: Decoder) throws {
@@ -157,6 +255,33 @@ public struct MeetingSummary: Codable, Sendable {
             owner = try? c.decodeIfPresent(String.self, forKey: .owner)
             task = try c.decodeIfPresent(String.self, forKey: .task) ?? ""
             due = try? c.decodeIfPresent(String.self, forKey: .due)
+            dueDate = try? c.decodeIfPresent(String.self, forKey: .dueDate)
+        }
+    }
+
+    /// A dated happening the model spotted. Dates are local strings like `Item.dueDate`.
+    public struct Event: Codable, Sendable {
+        public var title: String
+        public var start: String
+        public var end: String?
+        public var allDay: Bool
+        public var location: String?
+        public var context: String?
+
+        enum CodingKeys: String, CodingKey { case title, start, end, location, context; case allDay = "all_day" }
+
+        public init(title: String, start: String, end: String? = nil, allDay: Bool = false, location: String? = nil, context: String? = nil) {
+            self.title = title; self.start = start; self.end = end; self.allDay = allDay; self.location = location; self.context = context
+        }
+
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            title = try c.decodeIfPresent(String.self, forKey: .title) ?? ""
+            start = try c.decodeIfPresent(String.self, forKey: .start) ?? ""
+            end = try? c.decodeIfPresent(String.self, forKey: .end)
+            allDay = (try? c.decodeIfPresent(Bool.self, forKey: .allDay)) ?? false
+            location = try? c.decodeIfPresent(String.self, forKey: .location)
+            context = try? c.decodeIfPresent(String.self, forKey: .context)
         }
     }
 
@@ -165,16 +290,18 @@ public struct MeetingSummary: Codable, Sendable {
     public var decisions: [String]
     public var actionItems: [Item]
     public var openQuestions: [String]
+    public var events: [Event]
 
     enum CodingKeys: String, CodingKey {
-        case title, summary, decisions
+        case title, summary, decisions, events
         case actionItems = "action_items"
         case openQuestions = "open_questions"
     }
 
-    public init(title: String? = nil, summary: String, decisions: [String] = [], actionItems: [Item] = [], openQuestions: [String] = []) {
+    public init(title: String? = nil, summary: String, decisions: [String] = [], actionItems: [Item] = [],
+                openQuestions: [String] = [], events: [Event] = []) {
         self.title = title; self.summary = summary; self.decisions = decisions
-        self.actionItems = actionItems; self.openQuestions = openQuestions
+        self.actionItems = actionItems; self.openQuestions = openQuestions; self.events = events
     }
 
     public init(from decoder: Decoder) throws {
@@ -184,5 +311,6 @@ public struct MeetingSummary: Codable, Sendable {
         decisions = (try? c.decodeIfPresent([String].self, forKey: .decisions)) ?? []
         actionItems = (try? c.decodeIfPresent([Item].self, forKey: .actionItems)) ?? []
         openQuestions = (try? c.decodeIfPresent([String].self, forKey: .openQuestions)) ?? []
+        events = (try? c.decodeIfPresent([Event].self, forKey: .events)) ?? []
     }
 }

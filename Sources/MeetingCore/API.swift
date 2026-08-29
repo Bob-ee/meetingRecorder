@@ -112,11 +112,15 @@ public struct PatchMeetingRequest: Codable, Sendable {
     public var speakerNames: [String: String]?
     public var durationSeconds: Double?
     public var startedAt: Date?
+    /// Replaces the meeting's suggested events (added-to-calendar and dismissed state included).
+    public var events: [MeetingEvent]?
 
     public init(title: String? = nil, titleIsAuto: Bool? = nil, projectID: UUID? = nil, notes: String? = nil,
-                speakerNames: [String: String]? = nil, durationSeconds: Double? = nil, startedAt: Date? = nil) {
+                speakerNames: [String: String]? = nil, durationSeconds: Double? = nil, startedAt: Date? = nil,
+                events: [MeetingEvent]? = nil) {
         self.title = title; self.titleIsAuto = titleIsAuto; self.projectID = projectID; self.notes = notes
         self.speakerNames = speakerNames; self.durationSeconds = durationSeconds; self.startedAt = startedAt
+        self.events = events
     }
 }
 
