@@ -10,15 +10,24 @@ final class Pipeline: ObservableObject {
     private var running: Set<UUID> = []
     private let store: Store
     private let settings: AppSettings
+    /// Set when a hub is paired; in hub mode all work goes there.
+    weak var hub: HubSync?
 
     init(store: Store, settings: AppSettings) {
         self.store = store
         self.settings = settings
     }
 
-    func isRunning(_ id: UUID) -> Bool { running.contains(id) }
+    func isRunning(_ id: UUID) -> Bool { running.contains(id) || (hub?.isProcessing(id) ?? false) }
 
     func run(_ meeting: Meeting, transcribe: Bool = true, summarize: Bool = true) {
+        if let hub, settings.mode == .hub, hub.isEnabled {
+            var steps: [JobStep] = []
+            if transcribe { steps.append(.transcribe) }
+            if summarize { steps.append(.summarize) }
+            hub.process(meeting, steps: steps)
+            return
+        }
         guard !running.contains(meeting.id) else { return }
         running.insert(meeting.id)
         Task { await self.execute(meeting, transcribe: transcribe, summarize: summarize) }
@@ -33,7 +42,7 @@ final class Pipeline: ObservableObject {
                 fixed.status = .recorded
                 store.update(fixed)
                 run(fixed)
-            case .recorded, .queued, .transcribing:
+            case .recorded, .uploading, .queued, .transcribing:
                 run(m, transcribe: true, summarize: true)
             case .transcribed, .summarizing:
                 run(m, transcribe: !store.hasTranscript(m), summarize: true)

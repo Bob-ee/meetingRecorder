@@ -23,6 +23,9 @@ final class Store: ObservableObject {
 
     static let inboxName = "Inbox"
 
+    /// Fired after every local mutation so hub sync can push it. Not fired for what the hub itself sent us.
+    var onChange: ((StoreChange) -> Void)?
+
     init(rootURL: URL) {
         self.rootURL = rootURL
         reload()
@@ -134,14 +137,15 @@ final class Store: ObservableObject {
     }
 
     @discardableResult
-    func createProject(name: String) -> Project {
-        let project = Project(name: name)
+    func createProject(id: UUID? = nil, name: String) -> Project {
+        let project = Project(id: id ?? UUID(), name: name)
         let dir = uniqueURL(in: rootURL, base: Fmt.sanitizeFilename(name))
         try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
         projectFolders[project.id] = dir
         writeJSON(project, to: dir.appendingPathComponent("project.json"))
         projects.append(project)
         projects.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        onChange?(.project(project))
         return project
     }
 
@@ -164,6 +168,7 @@ final class Store: ObservableObject {
         writeJSON(p, to: projectFolders[id]!.appendingPathComponent("project.json"))
         if let i = projects.firstIndex(where: { $0.id == id }) { projects[i] = p }
         projects.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        onChange?(.project(p))
     }
 
     func deleteProject(_ id: UUID) {
@@ -173,6 +178,7 @@ final class Store: ObservableObject {
         for m in meetings where m.projectID == id { meetingFolders[m.id] = nil; textCache[m.id] = nil }
         meetings.removeAll { $0.projectID == id }
         projectFolders[id] = nil
+        onChange?(.deletedProject(id))
         if projects.isEmpty { createProject(name: Store.inboxName) }
     }
 
@@ -184,6 +190,7 @@ final class Store: ObservableObject {
     func setProjectContext(_ id: UUID, _ text: String) {
         guard let dir = projectFolders[id] else { return }
         try? text.write(to: dir.appendingPathComponent("CONTEXT.md"), atomically: true, encoding: .utf8)
+        if let p = project(id) { onChange?(.project(p)) }
     }
 
     // MARK: - Meetings
@@ -199,9 +206,9 @@ final class Store: ObservableObject {
         meetingFolders[meeting.id] ?? rootURL.appendingPathComponent("_orphaned/\(meeting.id.uuidString)", isDirectory: true)
     }
 
-    func createMeeting(in projectID: UUID, title: String, source: MeetingSource, startedAt: Date = Date()) -> Meeting {
+    func createMeeting(id: UUID? = nil, in projectID: UUID, title: String, source: MeetingSource, startedAt: Date = Date()) -> Meeting {
         let pid = project(projectID)?.id ?? inboxProject.id
-        let meeting = Meeting(projectID: pid, title: title, titleIsAuto: true, startedAt: startedAt, source: source)
+        let meeting = Meeting(id: id ?? UUID(), projectID: pid, title: title, titleIsAuto: true, startedAt: startedAt, source: source)
         let pdir = projectFolders[pid]!
         let dir = uniqueURL(in: pdir, base: "\(Fmt.folderStamp.string(from: startedAt)) \(Fmt.sanitizeFilename(title))")
         try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -228,6 +235,7 @@ final class Store: ObservableObject {
         if let i = meetings.firstIndex(where: { $0.id == meeting.id }) { meetings[i] = meeting } else { meetings.append(meeting) }
         meetings.sort { $0.startedAt > $1.startedAt }
         textCache[meeting.id] = nil
+        onChange?(.meeting(meeting))
     }
 
     func deleteMeeting(_ id: UUID) {
@@ -235,6 +243,7 @@ final class Store: ObservableObject {
         meetingFolders[id] = nil
         textCache[id] = nil
         meetings.removeAll { $0.id == id }
+        onChange?(.deletedMeeting(id))
     }
 
     func moveMeeting(_ id: UUID, to projectID: UUID) {
@@ -333,6 +342,7 @@ final class Store: ObservableObject {
     func saveNotes(_ text: String, for meeting: Meeting) {
         try? text.write(to: folder(for: meeting).appendingPathComponent("notes.md"), atomically: true, encoding: .utf8)
         textCache[meeting.id] = nil
+        onChange?(.notes(meeting))
     }
 
     func revealInFinder(_ meeting: Meeting) {

@@ -167,6 +167,12 @@ public struct PatchActionItemRequest: Codable, Sendable {
     }
 }
 
+public struct PushSummaryRequest: Codable, Sendable {
+    public var markdown: String
+    public var provider: String?
+    public init(markdown: String, provider: String? = nil) { self.markdown = markdown; self.provider = provider }
+}
+
 // MARK: Jobs
 
 public enum JobStatus: String, Codable, Sendable { case queued, running, done, failed }

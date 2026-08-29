@@ -12,6 +12,7 @@ final class AppState: ObservableObject {
     let store: Store
     let recorder: Recorder
     let pipeline: Pipeline
+    let hub: HubSync
     let detector: MeetingDetector
     private let watcher = FolderWatcher()
     private var pendingSizes: [URL: Int] = [:]
@@ -29,7 +30,11 @@ final class AppState: ObservableObject {
         self.store = store
         self.recorder = Recorder(store: store, settings: settings)
         self.pipeline = Pipeline(store: store, settings: settings)
+        self.hub = HubSync(store: store, settings: settings, pipeline: pipeline)
         self.detector = MeetingDetector()
+        pipeline.hub = hub
+        store.onChange = { [weak self] change in self?.hub.noteChange(change) }
+        hub.configure()
 
         recorder.onStopped = { [weak self] meeting in self?.pipeline.run(meeting) }
         detector.isRecordingProvider = { [weak self] in self?.recorder.isRecording ?? false }

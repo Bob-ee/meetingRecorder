@@ -24,6 +24,7 @@ extension ProcessRequest: Content {}
 extension HubSettings: Content {}
 extension Capabilities: Content {}
 extension TestResult: Content {}
+extension PushSummaryRequest: Content {}
 
 func routes(_ app: Application) throws {
     let api = app.grouped("api", "v1")
@@ -316,6 +317,37 @@ func meetingRoutes(_ r: RoutesBuilder) {
         let text = MeetingDocuments.everything(meeting: detail.meeting, projectName: detail.projectName, summaryMarkdown: detail.summaryMarkdown,
                                                notes: detail.notes, transcript: detail.transcript)
         return HubQueries.markdown(text, fileName: "\(Fmt.sanitizeFilename(meeting.title)).md")
+    }
+
+    /// Clients that processed a meeting themselves (local mode, or older meetings) push the results here.
+    r.put("meetings", ":id", "transcript") { req -> MeetingDetail in
+        let meeting = try await HubQueries.meeting(req, id: HubQueries.uuid(req, "id"))
+        let segments = try req.content.decode([TranscriptSegment].self)
+        if let existing = try await TranscriptModel.query(on: req.db).filter(\.$meeting.$id == meeting.id!).first() {
+            try await existing.delete(on: req.db)
+        }
+        try await TranscriptModel(meetingID: meeting.id!, segments: segments).save(on: req.db)
+        if meeting.meetingStatus == .recorded || meeting.meetingStatus == .failed { meeting.meetingStatus = .transcribed }
+        try await meeting.save(on: req.db)
+        let fresh = try await HubQueries.meeting(req, id: meeting.id!)
+        HubQueries.broadcastMeeting(req, fresh)
+        return try await HubQueries.detail(req, fresh)
+    }
+
+    r.put("meetings", ":id", "summary") { req -> MeetingDetail in
+        let meeting = try await HubQueries.meeting(req, id: HubQueries.uuid(req, "id"))
+        let body = try req.content.decode(PushSummaryRequest.self)
+        if let existing = try await SummaryModel.query(on: req.db).filter(\.$meeting.$id == meeting.id!).first() {
+            try await existing.delete(on: req.db)
+        }
+        let summary = MeetingSummary(summary: body.markdown)
+        try await SummaryModel(meetingID: meeting.id!, summary: summary, markdown: body.markdown, provider: body.provider ?? "client").save(on: req.db)
+        if meeting.meetingStatus != .ready { meeting.meetingStatus = .ready }
+        meeting.errorMessage = nil
+        try await meeting.save(on: req.db)
+        let fresh = try await HubQueries.meeting(req, id: meeting.id!)
+        HubQueries.broadcastMeeting(req, fresh)
+        return try await HubQueries.detail(req, fresh)
     }
 
     r.get("search") { req -> [Meeting] in
