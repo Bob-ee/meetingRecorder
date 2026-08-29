@@ -41,6 +41,44 @@ identity in your keychain (falling back to ad-hoc); override with `SIGN_IDENTITY
 Turn on *Detect meetings automatically* (Settings / menu bar) and the app notices when another app opens the
 microphone and asks whether to record.
 
+## Processing on a hub (optional)
+
+The app can hand all processing — transcription, speaker identification, summarization — to a **hub**: a small
+server you run on an always-on Mac (a Mac mini, an old MacBook with the lid closed) so your laptop can go offline
+or to sleep the moment a call ends. The hub also holds the database, so phones and other computers can read and
+edit the same meetings. See [docs/architecture.md](docs/architecture.md).
+
+**Install the hub** on the always-on machine (Command Line Tools / Swift required):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Bob-ee/meetingRecorder/main/scripts/install-hub.sh | sh
+```
+
+That builds `meetinghub`, starts it as a background service and prints a **pairing code** like
+`mh1:labmbp.tail22b52.ts.net:8787:mh_…`. Paste it into the app under **Settings → Hub**. Both machines being on
+the same [Tailscale](https://tailscale.com) network is the easiest way to reach the hub from anywhere; the hub only
+accepts connections from localhost and the tailnet unless you add ranges to `~/MeetingHub/config.json`.
+
+**Pick a summarizer** in the app (Settings → Hub → Summarizer), or with the API:
+
+| Provider | What you need |
+|---|---|
+| Claude subscription | run `claude setup-token` on any computer where Claude Code is logged in, paste the token |
+| Anthropic API | an API key (a one-hour meeting costs a few cents) |
+| OpenAI-compatible | a base URL — OpenAI, or a local Ollama / LM Studio for fully offline summaries |
+
+Useful commands on the hub machine:
+
+```sh
+meetinghub pair --name "Bobby's iPhone"   # another pairing code
+meetinghub tokens                          # list devices; --revoke NAME to revoke
+meetinghub service status|restart          # launchd service
+tail -f ~/MeetingHub/logs/hub.log
+```
+
+Everything the hub knows is also written as plain Markdown/JSON under `~/MeetingHub/export/`, in the same layout
+the app uses locally.
+
 ## Bringing in recordings from elsewhere
 
 Recorded a meeting on your phone, or have a Zoom cloud/local recording? Any of these runs the full pipeline:

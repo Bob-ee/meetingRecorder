@@ -36,7 +36,7 @@ actor JobRunner {
             if let job = try? await JobModel.query(on: db).filter(\.$status == JobStatus.queued.rawValue).sort(\.$createdAt).first() {
                 await run(job)
             } else {
-                let sleeper = Task { try? await Task.sleep(nanoseconds: 30_000_000_000); await self.poke() }
+                let sleeper = Task { try? await Task.sleep(nanoseconds: 30_000_000_000); self.poke() }
                 await withCheckedContinuation { c in waiters.append(c) }
                 sleeper.cancel()
             }

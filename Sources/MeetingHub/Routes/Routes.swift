@@ -4,26 +4,26 @@ import MeetingCore
 import Vapor
 
 // Wire types come from MeetingCore; this is what lets Vapor encode/decode them.
-extension Project: @retroactive Content {}
-extension Meeting: @retroactive Content {}
-extension ActionItem: @retroactive Content {}
-extension TranscriptSegment: @retroactive Content {}
-extension HubInfo: @retroactive Content {}
-extension WhoAmI: @retroactive Content {}
-extension ProjectDetail: @retroactive Content {}
-extension CreateProjectRequest: @retroactive Content {}
-extension PatchProjectRequest: @retroactive Content {}
-extension CreateMeetingRequest: @retroactive Content {}
-extension PatchMeetingRequest: @retroactive Content {}
-extension MeetingDetail: @retroactive Content {}
-extension AudioTrackInfo: @retroactive Content {}
-extension NewActionItemRequest: @retroactive Content {}
-extension PatchActionItemRequest: @retroactive Content {}
-extension JobInfo: @retroactive Content {}
-extension ProcessRequest: @retroactive Content {}
-extension HubSettings: @retroactive Content {}
-extension Capabilities: @retroactive Content {}
-extension TestResult: @retroactive Content {}
+extension Project: Content {}
+extension Meeting: Content {}
+extension ActionItem: Content {}
+extension TranscriptSegment: Content {}
+extension HubInfo: Content {}
+extension WhoAmI: Content {}
+extension ProjectDetail: Content {}
+extension CreateProjectRequest: Content {}
+extension PatchProjectRequest: Content {}
+extension CreateMeetingRequest: Content {}
+extension PatchMeetingRequest: Content {}
+extension MeetingDetail: Content {}
+extension AudioTrackInfo: Content {}
+extension NewActionItemRequest: Content {}
+extension PatchActionItemRequest: Content {}
+extension JobInfo: Content {}
+extension ProcessRequest: Content {}
+extension HubSettings: Content {}
+extension Capabilities: Content {}
+extension TestResult: Content {}
 
 func routes(_ app: Application) throws {
     let api = app.grouped("api", "v1")
