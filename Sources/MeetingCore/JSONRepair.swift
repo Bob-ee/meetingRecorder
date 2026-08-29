@@ -2,8 +2,8 @@ import Foundation
 
 /// Makes "almost JSON" from a language model parseable: strips code fences and leading/trailing prose,
 /// escapes raw control characters inside strings, and removes trailing commas.
-enum JSONRepair {
-    static func repair(_ text: String) -> String {
+public enum JSONRepair {
+    public static func repair(_ text: String) -> String {
         var s = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if let fence = s.range(of: "```json") ?? s.range(of: "```") {
             s = String(s[fence.upperBound...])

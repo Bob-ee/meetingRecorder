@@ -1,4 +1,6 @@
 import Foundation
+import MeetingCore
+import MeetingEngine
 import AVFoundation
 
 /// Records the default input device via AVAudioEngine as a mono track. When echo cancellation is on,
@@ -25,7 +27,7 @@ final class MicRecorder {
         let input = engine.inputNode
         if echoCancellation {
             do { try input.setVoiceProcessingEnabled(true) } catch {
-                Log.capture.error("voice processing unavailable: \(error.localizedDescription, privacy: .public)")
+                Log.capture.error("voice processing unavailable: \(error.localizedDescription)")
             }
         }
         var format = input.outputFormat(forBus: 0)
@@ -36,7 +38,7 @@ final class MicRecorder {
         guard format.sampleRate > 0, format.channelCount > 0 else {
             throw NSError(domain: "MicRecorder", code: 1, userInfo: [NSLocalizedDescriptionKey: "No usable microphone input format"])
         }
-        Log.capture.info("mic input format: \(format.sampleRate, privacy: .public) Hz, \(format.channelCount, privacy: .public) ch, voiceProcessing=\(input.isVoiceProcessingEnabled, privacy: .public)")
+        Log.capture.info("mic input format: \(format.sampleRate) Hz, \(format.channelCount) ch, voiceProcessing=\(input.isVoiceProcessingEnabled)")
 
         let writer = try TimelineWriter(url: url, sampleRate: format.sampleRate, clock: clock)
         let levelHandler = self.levelHandler

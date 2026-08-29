@@ -1,26 +1,38 @@
 import Foundation
+import MeetingCore
+
+#if canImport(FluidAudio)
 import FluidAudio
 
 /// On-device transcription: Parakeet TDT (ASR) + offline VBx diarization, all CoreML.
-/// The mic track is labeled "You"; remote audio is split into "Speaker 1", "Speaker 2", …
-actor TranscriptionService {
-    static let shared = TranscriptionService()
+/// The mic track is labeled with the recorder's name; remote audio is split into "Speaker 1", "Speaker 2", …
+/// Models are heavy, so there is one shared instance per process.
+public actor TranscriptionService: Transcriber {
+    public static let shared = TranscriptionService()
 
     private var asr: AsrManager?
     private var asrVersion: AsrModelVersion?
     private var diarizer: OfflineDiarizerManager?
+    private var wantedVersion: AsrModelVersion = .v3
 
-    static func modelVersion(from setting: String) -> AsrModelVersion {
+    public static func modelVersion(from setting: String) -> AsrModelVersion {
         setting == "v2" ? .v2 : .v3
     }
 
-    static var modelsDirectory: URL {
+    public static var modelsDirectory: URL {
         AsrModels.defaultCacheDirectory().deletingLastPathComponent()
     }
 
-    var isReady: Bool { asr != nil && diarizer != nil }
+    public var isReady: Bool { asr != nil && diarizer != nil }
 
-    func prepare(version: AsrModelVersion, status: @escaping @Sendable (String) -> Void) async throws {
+    /// "v3" (default, multilingual) or "v2" (English-only, slightly smaller).
+    public func setModelVersion(_ setting: String) { wantedVersion = Self.modelVersion(from: setting) }
+
+    public func prepare(status: @escaping @Sendable (String) -> Void) async throws {
+        try await prepare(version: wantedVersion, status: status)
+    }
+
+    public func prepare(version: AsrModelVersion, status: @escaping @Sendable (String) -> Void) async throws {
         if asr == nil || asrVersion != version {
             status("Loading speech model (downloads ~600 MB on first run)…")
             let models = try await AsrModels.downloadAndLoad(version: version)
@@ -44,8 +56,8 @@ actor TranscriptionService {
         var speaker: String
     }
 
-    func transcribe(micURL: URL?, remoteURL: URL?, userLabel: String,
-                    status: @escaping @Sendable (String) -> Void) async throws -> [TranscriptSegment] {
+    public func transcribe(micURL: URL?, remoteURL: URL?, userLabel: String,
+                           status: @escaping @Sendable (String) -> Void) async throws -> [TranscriptSegment] {
         guard let asr else { throw TranscriptionError.notReady }
         var words: [Word] = []
         var trackNotes: [String] = []
@@ -53,7 +65,7 @@ actor TranscriptionService {
         if let micURL, FileManager.default.fileExists(atPath: micURL.path) {
             status("Transcribing your microphone track…")
             let loaded = try AudioLoader.loadMono16k(micURL)
-            Log.pipeline.info("mic track: \(loaded.seconds, privacy: .public)s rms=\(loaded.rms, privacy: .public)")
+            Log.pipeline.info("mic track: \(loaded.seconds)s rms=\(loaded.rms)")
             trackNotes.append(String(format: "mic %.1fs%@", loaded.seconds, loaded.rms < 0.001 ? " (silent)" : ""))
             let samples = loaded.samples
             if samples.count > 16_000 {
@@ -65,7 +77,7 @@ actor TranscriptionService {
         if let remoteURL, FileManager.default.fileExists(atPath: remoteURL.path) {
             status("Transcribing other participants…")
             let loaded = try AudioLoader.loadMono16k(remoteURL)
-            Log.pipeline.info("remote track: \(loaded.seconds, privacy: .public)s rms=\(loaded.rms, privacy: .public)")
+            Log.pipeline.info("remote track: \(loaded.seconds)s rms=\(loaded.rms)")
             trackNotes.append(String(format: "%@ %.1fs%@", remoteURL.lastPathComponent.hasPrefix("import") ? "imported audio" : "system audio", loaded.seconds, loaded.rms < 0.001 ? " (silent)" : ""))
             let samples = loaded.samples
             if samples.count > 16_000 {
@@ -77,7 +89,7 @@ actor TranscriptionService {
                         let result = try await diarizer.process(audio: samples)
                         labels = Self.assignSpeakers(timings, diarization: result.segments)
                     } catch {
-                        Log.pipeline.error("diarization failed, using a single speaker: \(error.localizedDescription, privacy: .public)")
+                        Log.pipeline.error("diarization failed, using a single speaker: \(error.localizedDescription)")
                     }
                 }
                 for (i, t) in timings.enumerated() {
@@ -185,13 +197,20 @@ actor TranscriptionService {
     }
 }
 
-enum TranscriptionError: LocalizedError {
-    case notReady
-    case noSpeech(String)
-    var errorDescription: String? {
-        switch self {
-        case .notReady: return "Speech models are not loaded"
-        case .noSpeech(let detail): return "No speech was detected in the recording (\(detail))"
-        }
+#else
+
+/// Placeholder where CoreML models can't run (Linux). A cloud transcription provider will fill this slot.
+public actor TranscriptionService: Transcriber {
+    public static let shared = TranscriptionService()
+    public var isReady: Bool { false }
+    public func setModelVersion(_ setting: String) {}
+    public func prepare(status: @escaping @Sendable (String) -> Void) async throws {
+        throw TranscriptionError.unavailable("on-device speech models need macOS")
+    }
+    public func transcribe(micURL: URL?, remoteURL: URL?, userLabel: String,
+                           status: @escaping @Sendable (String) -> Void) async throws -> [TranscriptSegment] {
+        throw TranscriptionError.unavailable("on-device speech models need macOS")
     }
 }
+
+#endif

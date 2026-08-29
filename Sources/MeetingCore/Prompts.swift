@@ -1,17 +1,18 @@
 import Foundation
 
-enum Prompts {
-    static let system = """
+/// The prompts every summarizer uses, so the notes read the same whichever model wrote them.
+public enum Prompts {
+    public static let system = """
     You are an expert meeting note-taker. You read raw, auto-generated meeting transcripts (they may contain \
     transcription errors, missing words, and imperfect speaker labels) and produce accurate, concise, useful notes. \
     Never invent facts that are not supported by the transcript. When something is ambiguous, say so briefly rather \
     than guessing. You respond with a single JSON object and nothing else: no prose, no markdown code fences.
     """
 
-    static let instruction = "Read the meeting metadata, project context and transcript from stdin, then respond with the JSON object described there."
+    public static let instruction = "Read the meeting metadata, project context and transcript from stdin, then respond with the JSON object described there."
 
-    /// Passed to `claude --json-schema` so the CLI enforces the shape of the reply.
-    static let schema = """
+    /// JSON Schema for the reply. Passed to `claude --json-schema`, Anthropic tool input, etc.
+    public static let schema = """
     {"type":"object","additionalProperties":false,"properties":{\
     "title":{"type":"string"},\
     "summary":{"type":"string"},\
@@ -22,8 +23,17 @@ enum Prompts {
     "required":["title","summary","decisions","action_items","open_questions"]}
     """
 
-    static func user(transcript: String, projectName: String?, projectContext: String,
-                     meeting: Meeting, userName: String) -> String {
+    public static var schemaObject: [String: Any] {
+        (try? JSONSerialization.jsonObject(with: Data(schema.utf8)) as? [String: Any]) ?? [:]
+    }
+
+    public static func user(_ r: SummaryRequest) -> String {
+        user(transcript: r.transcriptMarkdown, projectName: r.projectName, projectContext: r.projectContext,
+             meeting: r.meeting, userName: r.userName)
+    }
+
+    public static func user(transcript: String, projectName: String?, projectContext: String,
+                            meeting: Meeting, userName: String) -> String {
         let context = projectContext.trimmingCharacters(in: .whitespacesAndNewlines)
         return """
         # Meeting metadata
@@ -60,7 +70,7 @@ enum Prompts {
         """
     }
 
-    static func renderSummary(_ s: MeetingSummary, meeting: Meeting, projectName: String?) -> String {
+    public static func renderSummary(_ s: MeetingSummary, meeting: Meeting, projectName: String?) -> String {
         var out = "# \(s.title ?? meeting.title)\n\n"
         var meta = ["\(Fmt.dateTime.string(from: meeting.startedAt))", Fmt.duration(meeting.durationSeconds)]
         if let projectName { meta.append(projectName) }

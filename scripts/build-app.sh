@@ -10,7 +10,7 @@ CONFIG="${1:-release}"
 APP="build/MeetingRecorder.app"
 BIN=".build/$CONFIG/MeetingRecorder"
 
-swift build -c "$CONFIG"
+swift build -c "$CONFIG" --product MeetingRecorder
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"

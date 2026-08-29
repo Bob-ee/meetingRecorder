@@ -1,13 +1,13 @@
 import Foundation
 
-struct ProcessResult {
-    let exitCode: Int32
-    let stdout: String
-    let stderr: String
+public struct ProcessResult: Sendable {
+    public let exitCode: Int32
+    public let stdout: String
+    public let stderr: String
 }
 
-enum ProcessRunner {
-    static func run(executable: String, arguments: [String], stdin: String?, environment: [String: String],
+public enum ProcessRunner {
+    public static func run(executable: String, arguments: [String], stdin: String?, environment: [String: String],
                     currentDirectory: URL?, timeout: TimeInterval) async throws -> ProcessResult {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)

@@ -1,4 +1,5 @@
 import Foundation
+import MeetingCore
 import CoreAudio
 import AudioToolbox
 

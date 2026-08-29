@@ -1,4 +1,5 @@
 import Foundation
+import MeetingCore
 
 final class AppSettings: ObservableObject {
     private let defaults = UserDefaults.standard
@@ -23,6 +24,11 @@ final class AppSettings: ObservableObject {
         echoCancellation = defaults.object(forKey: "echoCancellation") as? Bool ?? true
         autoDetect = defaults.object(forKey: "autoDetect") as? Bool ?? true
         lastProjectID = defaults.string(forKey: "lastProjectID") ?? ""
+    }
+
+    /// Local-mode summarizer (claude -p on this Mac). Hub mode keeps its own settings on the hub.
+    var summarizerSettings: SummarizerSettings {
+        SummarizerSettings(provider: .claudeCLI, model: claudeModel, claudePath: claudePath)
     }
 
     var storageRootURL: URL {

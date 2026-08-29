@@ -1,3 +1,4 @@
+import MeetingCore
 import SwiftUI
 
 struct MeetingListView: View {
@@ -102,7 +103,7 @@ struct StatusChip: View {
         switch status {
         case .recording: return .red
         case .recorded, .transcribed: return .gray
-        case .transcribing, .summarizing: return .blue
+        case .uploading, .queued, .transcribing, .summarizing: return .blue
         case .ready: return .green
         case .failed: return .orange
         }

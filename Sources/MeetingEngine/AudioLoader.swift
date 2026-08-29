@@ -1,15 +1,17 @@
+#if canImport(AVFoundation)
 import Foundation
 import AVFoundation
+import MeetingCore
 
 /// Loads any audio file AVFoundation can read (CAF/WAV/AIFF/M4A/MP3, any channel count)
 /// as 16 kHz mono Float32 samples, streaming so long meetings don't blow up memory.
-enum AudioLoader {
-    static let targetRate: Double = 16_000
+public enum AudioLoader {
+    public static let targetRate: Double = 16_000
 
-    struct Loaded {
-        var samples: [Float]
-        var seconds: Double { Double(samples.count) / AudioLoader.targetRate }
-        var rms: Float {
+    public struct Loaded {
+        public var samples: [Float]
+        public var seconds: Double { Double(samples.count) / AudioLoader.targetRate }
+        public var rms: Float {
             guard !samples.isEmpty else { return 0 }
             var sum: Float = 0
             for s in samples { sum += s * s }
@@ -17,7 +19,7 @@ enum AudioLoader {
         }
     }
 
-    static func loadMono16k(_ url: URL) throws -> Loaded {
+    public static func loadMono16k(_ url: URL) throws -> Loaded {
         let file = try AVAudioFile(forReading: url)
         let srcFormat = file.processingFormat
         guard file.length > 0, srcFormat.sampleRate > 0 else { return Loaded(samples: []) }
@@ -75,3 +77,4 @@ enum AudioLoader {
         return Loaded(samples: out)
     }
 }
+#endif

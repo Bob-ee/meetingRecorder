@@ -1,23 +1,25 @@
+#if canImport(AVFoundation)
 import Foundation
 import AVFoundation
+import MeetingCore
 
 /// Converts a raw capture track to mono AAC (~30 MB/hour) and removes the original.
-enum AudioArchiver {
-    static func compressAndReplace(_ url: URL) {
+public enum AudioArchiver {
+    public static func compressAndReplace(_ url: URL) {
         let dest = url.deletingPathExtension().appendingPathExtension("m4a")
         do {
             try compress(url, to: dest)
             let attrs = try FileManager.default.attributesOfItem(atPath: dest.path)
             guard (attrs[.size] as? Int ?? 0) > 0 else { throw NSError(domain: "AudioArchiver", code: 1) }
             try FileManager.default.removeItem(at: url)
-            Log.pipeline.info("compressed \(url.lastPathComponent, privacy: .public) → \(dest.lastPathComponent, privacy: .public)")
+            Log.pipeline.info("compressed \(url.lastPathComponent) → \(dest.lastPathComponent)")
         } catch {
-            Log.pipeline.error("compression of \(url.lastPathComponent, privacy: .public) failed, keeping original: \(error.localizedDescription, privacy: .public)")
+            Log.pipeline.error("compression of \(url.lastPathComponent) failed, keeping original: \(error.localizedDescription)")
             try? FileManager.default.removeItem(at: dest)
         }
     }
 
-    static func compress(_ src: URL, to dest: URL) throws {
+    public static func compress(_ src: URL, to dest: URL) throws {
         let input = try AVAudioFile(forReading: src)
         let srcFormat = input.processingFormat
         let rate = [48_000.0, 44_100.0, 32_000.0, 24_000.0, 22_050.0, 16_000.0].contains(srcFormat.sampleRate) ? srcFormat.sampleRate : 48_000.0
@@ -56,3 +58,4 @@ enum AudioArchiver {
         }
     }
 }
+#endif

@@ -1,4 +1,5 @@
 import Foundation
+import MeetingCore
 import AVFoundation
 
 @MainActor
@@ -47,7 +48,7 @@ final class Recorder: ObservableObject {
             systemActive = true
         } catch {
             systemActive = false
-            Log.capture.error("system audio start failed: \(error.localizedDescription, privacy: .public)")
+            Log.capture.error("system audio start failed: \(error.localizedDescription)")
             problems.append("System audio: \(error.localizedDescription). Grant “System Audio Recording” in System Settings → Privacy & Security → Screen & System Audio Recording.")
         }
 
@@ -57,7 +58,7 @@ final class Recorder: ObservableObject {
                 micActive = true
             } catch {
                 micActive = false
-                Log.capture.error("mic start failed: \(error.localizedDescription, privacy: .public)")
+                Log.capture.error("mic start failed: \(error.localizedDescription)")
                 problems.append("Microphone: \(error.localizedDescription)")
             }
         } else {
@@ -92,7 +93,7 @@ final class Recorder: ObservableObject {
         let total = clock?.elapsedNow() ?? elapsed
         let micSeconds = mic.stop(totalSeconds: total)
         let systemSeconds = system.stop(totalSeconds: total)
-        Log.capture.info("stopped after \(total, privacy: .public)s — mic track \(micSeconds, privacy: .public)s, system track \(systemSeconds, privacy: .public)s")
+        Log.capture.info("stopped after \(total)s — mic track \(micSeconds)s, system track \(systemSeconds)s")
         micActive = false; systemActive = false
         micLevel = 0; systemLevel = 0
         clock = nil

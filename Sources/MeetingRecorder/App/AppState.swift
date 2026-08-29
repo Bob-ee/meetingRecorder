@@ -1,3 +1,5 @@
+import MeetingCore
+import MeetingEngine
 import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
@@ -156,7 +158,7 @@ final class AppState: ObservableObject {
             store.deleteMeeting(meeting.id)
             pipeline.setProgress(meeting.id, nil)
             importError = "Couldn't import \(url.lastPathComponent): \(error.localizedDescription)"
-            Log.pipeline.error("import failed for \(url.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            Log.pipeline.error("import failed for \(url.lastPathComponent): \(error.localizedDescription)")
             return
         }
         pipeline.setProgress(meeting.id, nil)

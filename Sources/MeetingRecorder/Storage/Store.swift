@@ -1,4 +1,5 @@
 import Foundation
+import MeetingCore
 import AppKit
 
 /// Everything lives as plain files under `rootURL`:
@@ -211,7 +212,9 @@ final class Store: ObservableObject {
         return meeting
     }
 
-    func update(_ meeting: Meeting) {
+    func update(_ input: Meeting) {
+        var meeting = input
+        meeting.updatedAt = Date()
         guard let dir = meetingFolders[meeting.id] else { return }
         // Keep folder name in sync with the title when it is safe to do so.
         let desired = "\(Fmt.folderStamp.string(from: meeting.startedAt)) \(Fmt.sanitizeFilename(meeting.title))"
@@ -288,11 +291,7 @@ final class Store: ObservableObject {
     }
 
     func transcriptMarkdown(_ segments: [TranscriptSegment], meeting: Meeting) -> String {
-        var out = "# Transcript — \(meeting.title)\n\n_\(Fmt.dateTime.string(from: meeting.startedAt))_\n\n"
-        for s in segments {
-            out += "**[\(Fmt.timestamp(s.start))] \(meeting.displayName(forSpeaker: s.speaker)):** \(s.text)\n\n"
-        }
-        return out
+        MeetingDocuments.transcriptMarkdown(segments, meeting: meeting)
     }
 
     func renameSpeaker(_ speaker: String, to name: String, in meetingID: UUID) {
@@ -313,36 +312,13 @@ final class Store: ObservableObject {
 
     /// Action items as a Markdown checklist, checked state included.
     func actionItemsMarkdown(_ meeting: Meeting) -> String {
-        meeting.actionItems.map { item in
-            var line = item.done ? "- [x] " : "- [ ] "
-            if let owner = item.owner, !owner.isEmpty { line += "**\(owner)** — " }
-            line += item.task
-            if let due = item.due, !due.isEmpty { line += " _(due \(due))_" }
-            return line
-        }.joined(separator: "\n")
+        MeetingDocuments.actionItemsMarkdown(meeting.actionItems)
     }
 
     /// summary.md with its "Action items" section swapped for the live list (done states, manual additions).
     func summaryExport(for meeting: Meeting) -> String? {
         guard let md = summaryMarkdown(for: meeting) else { return nil }
-        let items = actionItemsMarkdown(meeting)
-        let lines = md.components(separatedBy: "\n")
-        var out: [String] = []
-        var replaced = false
-        var i = 0
-        while i < lines.count {
-            if lines[i].lowercased().hasPrefix("## action items") {
-                out += ["## Action items", "", items.isEmpty ? "_None_" : items, ""]
-                i += 1
-                while i < lines.count, !lines[i].hasPrefix("## ") { i += 1 }
-                replaced = true
-                continue
-            }
-            out.append(lines[i])
-            i += 1
-        }
-        if !replaced, !items.isEmpty { out += ["", "## Action items", "", items, ""] }
-        return out.joined(separator: "\n")
+        return MeetingDocuments.summaryExport(summaryMarkdown: md, actionItems: meeting.actionItems)
     }
 
     func saveSummary(_ markdown: String, for meeting: Meeting) {
@@ -365,24 +341,9 @@ final class Store: ObservableObject {
 
     /// One Markdown blob with everything, for pasting into Claude.
     func exportForClaude(_ meeting: Meeting) -> String {
-        var out = "# \(meeting.title)\n\n"
-        out += "- Date: \(Fmt.dateTime.string(from: meeting.startedAt))\n"
-        out += "- Duration: \(Fmt.duration(meeting.durationSeconds))\n"
-        if let p = project(meeting.projectID) { out += "- Project: \(p.name)\n" }
-        out += "\n"
-        if let summary = summaryExport(for: meeting) {
-            out += summary.trimmingCharacters(in: .whitespacesAndNewlines) + "\n\n"
-        } else if !meeting.actionItems.isEmpty {
-            out += "## Action items\n\n" + actionItemsMarkdown(meeting) + "\n\n"
-        }
-        let notes = notes(for: meeting).trimmingCharacters(in: .whitespacesAndNewlines)
-        if !notes.isEmpty { out += "## My notes\n\n\(notes)\n\n" }
-        let segs = transcript(for: meeting)
-        if !segs.isEmpty {
-            out += "## Transcript\n\n"
-            for s in segs { out += "**[\(Fmt.timestamp(s.start))] \(meeting.displayName(forSpeaker: s.speaker)):** \(s.text)\n\n" }
-        }
-        return out
+        MeetingDocuments.everything(meeting: meeting, projectName: project(meeting.projectID)?.name,
+                                    summaryMarkdown: summaryMarkdown(for: meeting), notes: notes(for: meeting),
+                                    transcript: transcript(for: meeting))
     }
 
     // MARK: - Search

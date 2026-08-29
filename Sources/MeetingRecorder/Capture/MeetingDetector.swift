@@ -1,4 +1,5 @@
 import Foundation
+import MeetingCore
 import AppKit
 
 /// Watches the default input device. When another app starts using the microphone

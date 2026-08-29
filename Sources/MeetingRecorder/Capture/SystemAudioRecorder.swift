@@ -1,4 +1,6 @@
 import Foundation
+import MeetingCore
+import MeetingEngine
 import AVFoundation
 import CoreAudio
 import AudioToolbox
@@ -57,7 +59,7 @@ final class SystemAudioRecorder {
             guard let format = AVAudioFormat(streamDescription: &asbd) else {
                 throw CoreAudioError(status: -1, what: "tap format")
             }
-            Log.capture.info("system tap format: \(format.sampleRate, privacy: .public) Hz, \(format.channelCount, privacy: .public) ch, float=\(format.commonFormat == .pcmFormatFloat32, privacy: .public), interleaved=\(format.isInterleaved, privacy: .public)")
+            Log.capture.info("system tap format: \(format.sampleRate) Hz, \(format.channelCount) ch, float=\(format.commonFormat == .pcmFormatFloat32), interleaved=\(format.isInterleaved)")
 
             let writer = try TimelineWriter(url: url, sampleRate: format.sampleRate, clock: clock)
             self.writer = writer

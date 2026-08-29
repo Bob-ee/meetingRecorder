@@ -1,3 +1,5 @@
+import MeetingCore
+import MeetingEngine
 import SwiftUI
 import AppKit
 
@@ -50,7 +52,7 @@ struct SettingsView: View {
                 }
                 TextField("Path to `claude` (blank = auto-detect)", text: $settings.claudePath)
                 HStack {
-                    Button("Test") { claudeFound = ClaudeSummarizer.locateClaude(override: settings.claudePath) ?? "not found" }
+                    Button("Test") { claudeFound = ClaudeCLISummarizer.locateClaude(override: settings.claudePath) ?? "not found" }
                     if let f = claudeFound { Text(f).font(.callout).foregroundStyle(f == "not found" ? .red : .secondary) }
                 }
             }

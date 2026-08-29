@@ -1,3 +1,4 @@
+import MeetingCore
 import SwiftUI
 
 @main
