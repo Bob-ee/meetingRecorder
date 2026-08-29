@@ -1,3 +1,4 @@
+import MeetingCore
 import SwiftUI
 
 /// Every open action item across all projects, grouped by meeting.

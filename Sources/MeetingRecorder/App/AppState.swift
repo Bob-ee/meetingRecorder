@@ -1,3 +1,5 @@
+import MeetingCore
+import MeetingEngine
 import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
@@ -10,6 +12,7 @@ final class AppState: ObservableObject {
     let store: Store
     let recorder: Recorder
     let pipeline: Pipeline
+    let hub: HubSync
     let detector: MeetingDetector
     private let watcher = FolderWatcher()
     private var pendingSizes: [URL: Int] = [:]
@@ -27,7 +30,11 @@ final class AppState: ObservableObject {
         self.store = store
         self.recorder = Recorder(store: store, settings: settings)
         self.pipeline = Pipeline(store: store, settings: settings)
+        self.hub = HubSync(store: store, settings: settings, pipeline: pipeline)
         self.detector = MeetingDetector()
+        pipeline.hub = hub
+        store.onChange = { [weak self] change in self?.hub.noteChange(change) }
+        hub.configure()
 
         recorder.onStopped = { [weak self] meeting in self?.pipeline.run(meeting) }
         detector.isRecordingProvider = { [weak self] in self?.recorder.isRecording ?? false }
@@ -156,7 +163,7 @@ final class AppState: ObservableObject {
             store.deleteMeeting(meeting.id)
             pipeline.setProgress(meeting.id, nil)
             importError = "Couldn't import \(url.lastPathComponent): \(error.localizedDescription)"
-            Log.pipeline.error("import failed for \(url.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            Log.pipeline.error("import failed for \(url.lastPathComponent): \(error.localizedDescription)")
             return
         }
         pipeline.setProgress(meeting.id, nil)

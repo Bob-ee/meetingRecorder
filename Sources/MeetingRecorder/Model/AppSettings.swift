@@ -1,4 +1,5 @@
 import Foundation
+import MeetingCore
 
 final class AppSettings: ObservableObject {
     private let defaults = UserDefaults.standard
@@ -11,6 +12,11 @@ final class AppSettings: ObservableObject {
     @Published var echoCancellation: Bool { didSet { defaults.set(echoCancellation, forKey: "echoCancellation") } }
     @Published var autoDetect: Bool { didSet { defaults.set(autoDetect, forKey: "autoDetect") } }
     @Published var lastProjectID: String { didSet { defaults.set(lastProjectID, forKey: "lastProjectID") } }
+    /// "local" (this Mac does the work) or "hub".
+    @Published var processingMode: String { didSet { defaults.set(processingMode, forKey: "processingMode") } }
+    /// `mh1:<host>:<port>:<token>` from `meetinghub setup` / `meetinghub pair`.
+    @Published var hubPairingCode: String { didSet { defaults.set(hubPairingCode, forKey: "hubPairingCode") } }
+    @Published var hubLastSync: Double { didSet { defaults.set(hubLastSync, forKey: "hubLastSync") } }
 
     init() {
         storageRoot = defaults.string(forKey: "storageRoot") ?? "~/Meetings"
@@ -23,6 +29,16 @@ final class AppSettings: ObservableObject {
         echoCancellation = defaults.object(forKey: "echoCancellation") as? Bool ?? true
         autoDetect = defaults.object(forKey: "autoDetect") as? Bool ?? true
         lastProjectID = defaults.string(forKey: "lastProjectID") ?? ""
+        processingMode = defaults.string(forKey: "processingMode") ?? ProcessingMode.local.rawValue
+        hubPairingCode = defaults.string(forKey: "hubPairingCode") ?? ""
+        hubLastSync = defaults.double(forKey: "hubLastSync")
+    }
+
+    var mode: ProcessingMode { ProcessingMode(rawValue: processingMode) ?? .local }
+
+    /// Local-mode summarizer (claude -p on this Mac). Hub mode keeps its own settings on the hub.
+    var summarizerSettings: SummarizerSettings {
+        SummarizerSettings(provider: .claudeCLI, model: claudeModel, claudePath: claudePath)
     }
 
     var storageRootURL: URL {

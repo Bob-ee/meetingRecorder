@@ -43,5 +43,11 @@
             <key>CFBundleURLSchemes</key><array><string>meetingrecorder</string></array>
         </dict>
     </array>
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <!-- The hub is reached over a Tailscale/WireGuard tunnel; TLS on the hub itself is on the roadmap (mh1s codes). -->
+        <key>NSAllowsArbitraryLoads</key>
+        <true/>
+    </dict>
 </dict>
 </plist>

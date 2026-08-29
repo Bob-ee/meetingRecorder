@@ -1,4 +1,5 @@
 import Foundation
+import MeetingCore
 
 /// Fires (debounced) when anything changes inside the watched directories.
 @MainActor

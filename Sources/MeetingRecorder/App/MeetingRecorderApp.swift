@@ -1,3 +1,4 @@
+import MeetingCore
 import SwiftUI
 
 @main
@@ -13,6 +14,7 @@ struct MeetingRecorderApp: App {
                 .environmentObject(app.recorder)
                 .environmentObject(app.pipeline)
                 .environmentObject(app.settings)
+                .environmentObject(app.hub)
                 .frame(minWidth: 980, minHeight: 600)
         }
         .handlesExternalEvents(matching: ["open"])
@@ -48,6 +50,7 @@ struct MeetingRecorderApp: App {
                 .environmentObject(app)
                 .environmentObject(app.store)
                 .environmentObject(app.settings)
+                .environmentObject(app.hub)
         }
     }
 }

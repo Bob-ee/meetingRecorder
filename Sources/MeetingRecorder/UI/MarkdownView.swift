@@ -1,3 +1,4 @@
+import MeetingCore
 import SwiftUI
 
 /// Small block-level Markdown renderer: headings, bullets, numbered lists, checkboxes, paragraphs.

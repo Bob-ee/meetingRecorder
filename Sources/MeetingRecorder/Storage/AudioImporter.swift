@@ -1,4 +1,5 @@
 import Foundation
+import MeetingCore
 import AVFoundation
 
 /// Brings an external recording (phone voice memo, Zoom local recording, a video…) into a meeting folder.

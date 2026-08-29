@@ -2,8 +2,8 @@ import Foundation
 
 /// Minimal Markdown → HTML for clipboard use. Inline styles only (Gmail strips <style> blocks),
 /// checkboxes as ☐/☑ glyphs (form controls get dropped by mail clients).
-enum MarkdownHTML {
-    static func render(_ markdown: String) -> String {
+public enum MarkdownHTML {
+    public static func render(_ markdown: String) -> String {
         var html = ""
         var openListTag: String?          // "ul", "ol", or "check"
         var paragraph: [String] = []
@@ -60,7 +60,7 @@ enum MarkdownHTML {
         return "<div style=\"font-family:-apple-system,BlinkMacSystemFont,'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:14px;line-height:1.45;color:#1d1d1f\">\n\(html)</div>"
     }
 
-    static func inline(_ text: String) -> String {
+    public static func inline(_ text: String) -> String {
         var s = escape(text)
         s = replace(s, #"`([^`]+)`"#,
                     "<code style=\"font-family:Menlo,Monaco,monospace;font-size:13px;background:#f2f2f4;padding:1px 4px;border-radius:3px\">$1</code>")
@@ -71,7 +71,7 @@ enum MarkdownHTML {
         return s
     }
 
-    static func escape(_ s: String) -> String {
+    public static func escape(_ s: String) -> String {
         s.replacingOccurrences(of: "&", with: "&amp;")
             .replacingOccurrences(of: "<", with: "&lt;")
             .replacingOccurrences(of: ">", with: "&gt;")

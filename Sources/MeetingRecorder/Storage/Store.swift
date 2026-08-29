@@ -1,4 +1,5 @@
 import Foundation
+import MeetingCore
 import AppKit
 
 /// Everything lives as plain files under `rootURL`:
@@ -21,6 +22,9 @@ final class Store: ObservableObject {
     private let fm = FileManager.default
 
     static let inboxName = "Inbox"
+
+    /// Fired after every local mutation so hub sync can push it. Not fired for what the hub itself sent us.
+    var onChange: ((StoreChange) -> Void)?
 
     init(rootURL: URL) {
         self.rootURL = rootURL
@@ -90,8 +94,12 @@ final class Store: ObservableObject {
             return !fm.fileExists(atPath: dir.appendingPathComponent("meeting.json").path)
         }
         for m in goneMeetings {
+            let projectStillThere = projectFolders[m.projectID].map { fm.fileExists(atPath: $0.path) } ?? false
             meetingFolders[m.id] = nil
             textCache[m.id] = nil
+            // A meeting folder removed in Finder while its project is still here is a deliberate delete —
+            // tell the hub. A vanished project folder (unmounted drive, iCloud eviction) is not.
+            if projectStillThere { onChange?(.deletedMeeting(m.id)) }
         }
         if !goneMeetings.isEmpty { meetings.removeAll { m in goneMeetings.contains { $0.id == m.id } } }
         let goneProjects = projects.filter { p in
@@ -133,14 +141,15 @@ final class Store: ObservableObject {
     }
 
     @discardableResult
-    func createProject(name: String) -> Project {
-        let project = Project(name: name)
+    func createProject(id: UUID? = nil, name: String) -> Project {
+        let project = Project(id: id ?? UUID(), name: name)
         let dir = uniqueURL(in: rootURL, base: Fmt.sanitizeFilename(name))
         try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
         projectFolders[project.id] = dir
         writeJSON(project, to: dir.appendingPathComponent("project.json"))
         projects.append(project)
         projects.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        onChange?(.project(project))
         return project
     }
 
@@ -163,6 +172,7 @@ final class Store: ObservableObject {
         writeJSON(p, to: projectFolders[id]!.appendingPathComponent("project.json"))
         if let i = projects.firstIndex(where: { $0.id == id }) { projects[i] = p }
         projects.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        onChange?(.project(p))
     }
 
     func deleteProject(_ id: UUID) {
@@ -172,7 +182,22 @@ final class Store: ObservableObject {
         for m in meetings where m.projectID == id { meetingFolders[m.id] = nil; textCache[m.id] = nil }
         meetings.removeAll { $0.projectID == id }
         projectFolders[id] = nil
+        onChange?(.deletedProject(id))
         if projects.isEmpty { createProject(name: Store.inboxName) }
+    }
+
+    /// Give a local project the id the hub uses for it (same name, different id). Folder and meetings stay put.
+    func adoptProjectID(_ oldID: UUID, newID: UUID) {
+        guard oldID != newID, var p = project(oldID), let dir = projectFolders[oldID], project(newID) == nil else { return }
+        p.id = newID
+        writeJSON(p, to: dir.appendingPathComponent("project.json"))
+        projectFolders[newID] = dir
+        projectFolders[oldID] = nil
+        if let i = projects.firstIndex(where: { $0.id == oldID }) { projects[i] = p }
+        for i in meetings.indices where meetings[i].projectID == oldID {
+            meetings[i].projectID = newID
+            if let mdir = meetingFolders[meetings[i].id] { writeJSON(meetings[i], to: mdir.appendingPathComponent("meeting.json")) }
+        }
     }
 
     func projectContext(_ id: UUID) -> String {
@@ -183,6 +208,7 @@ final class Store: ObservableObject {
     func setProjectContext(_ id: UUID, _ text: String) {
         guard let dir = projectFolders[id] else { return }
         try? text.write(to: dir.appendingPathComponent("CONTEXT.md"), atomically: true, encoding: .utf8)
+        if let p = project(id) { onChange?(.project(p)) }
     }
 
     // MARK: - Meetings
@@ -198,9 +224,9 @@ final class Store: ObservableObject {
         meetingFolders[meeting.id] ?? rootURL.appendingPathComponent("_orphaned/\(meeting.id.uuidString)", isDirectory: true)
     }
 
-    func createMeeting(in projectID: UUID, title: String, source: MeetingSource, startedAt: Date = Date()) -> Meeting {
+    func createMeeting(id: UUID? = nil, in projectID: UUID, title: String, source: MeetingSource, startedAt: Date = Date()) -> Meeting {
         let pid = project(projectID)?.id ?? inboxProject.id
-        let meeting = Meeting(projectID: pid, title: title, titleIsAuto: true, startedAt: startedAt, source: source)
+        let meeting = Meeting(id: id ?? UUID(), projectID: pid, title: title, titleIsAuto: true, startedAt: startedAt, source: source)
         let pdir = projectFolders[pid]!
         let dir = uniqueURL(in: pdir, base: "\(Fmt.folderStamp.string(from: startedAt)) \(Fmt.sanitizeFilename(title))")
         try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -211,7 +237,9 @@ final class Store: ObservableObject {
         return meeting
     }
 
-    func update(_ meeting: Meeting) {
+    func update(_ input: Meeting) {
+        var meeting = input
+        meeting.updatedAt = Date()
         guard let dir = meetingFolders[meeting.id] else { return }
         // Keep folder name in sync with the title when it is safe to do so.
         let desired = "\(Fmt.folderStamp.string(from: meeting.startedAt)) \(Fmt.sanitizeFilename(meeting.title))"
@@ -225,6 +253,7 @@ final class Store: ObservableObject {
         if let i = meetings.firstIndex(where: { $0.id == meeting.id }) { meetings[i] = meeting } else { meetings.append(meeting) }
         meetings.sort { $0.startedAt > $1.startedAt }
         textCache[meeting.id] = nil
+        onChange?(.meeting(meeting))
     }
 
     func deleteMeeting(_ id: UUID) {
@@ -232,6 +261,7 @@ final class Store: ObservableObject {
         meetingFolders[id] = nil
         textCache[id] = nil
         meetings.removeAll { $0.id == id }
+        onChange?(.deletedMeeting(id))
     }
 
     func moveMeeting(_ id: UUID, to projectID: UUID) {
@@ -288,11 +318,7 @@ final class Store: ObservableObject {
     }
 
     func transcriptMarkdown(_ segments: [TranscriptSegment], meeting: Meeting) -> String {
-        var out = "# Transcript — \(meeting.title)\n\n_\(Fmt.dateTime.string(from: meeting.startedAt))_\n\n"
-        for s in segments {
-            out += "**[\(Fmt.timestamp(s.start))] \(meeting.displayName(forSpeaker: s.speaker)):** \(s.text)\n\n"
-        }
-        return out
+        MeetingDocuments.transcriptMarkdown(segments, meeting: meeting)
     }
 
     func renameSpeaker(_ speaker: String, to name: String, in meetingID: UUID) {
@@ -313,36 +339,13 @@ final class Store: ObservableObject {
 
     /// Action items as a Markdown checklist, checked state included.
     func actionItemsMarkdown(_ meeting: Meeting) -> String {
-        meeting.actionItems.map { item in
-            var line = item.done ? "- [x] " : "- [ ] "
-            if let owner = item.owner, !owner.isEmpty { line += "**\(owner)** — " }
-            line += item.task
-            if let due = item.due, !due.isEmpty { line += " _(due \(due))_" }
-            return line
-        }.joined(separator: "\n")
+        MeetingDocuments.actionItemsMarkdown(meeting.actionItems)
     }
 
     /// summary.md with its "Action items" section swapped for the live list (done states, manual additions).
     func summaryExport(for meeting: Meeting) -> String? {
         guard let md = summaryMarkdown(for: meeting) else { return nil }
-        let items = actionItemsMarkdown(meeting)
-        let lines = md.components(separatedBy: "\n")
-        var out: [String] = []
-        var replaced = false
-        var i = 0
-        while i < lines.count {
-            if lines[i].lowercased().hasPrefix("## action items") {
-                out += ["## Action items", "", items.isEmpty ? "_None_" : items, ""]
-                i += 1
-                while i < lines.count, !lines[i].hasPrefix("## ") { i += 1 }
-                replaced = true
-                continue
-            }
-            out.append(lines[i])
-            i += 1
-        }
-        if !replaced, !items.isEmpty { out += ["", "## Action items", "", items, ""] }
-        return out.joined(separator: "\n")
+        return MeetingDocuments.summaryExport(summaryMarkdown: md, actionItems: meeting.actionItems)
     }
 
     func saveSummary(_ markdown: String, for meeting: Meeting) {
@@ -357,6 +360,7 @@ final class Store: ObservableObject {
     func saveNotes(_ text: String, for meeting: Meeting) {
         try? text.write(to: folder(for: meeting).appendingPathComponent("notes.md"), atomically: true, encoding: .utf8)
         textCache[meeting.id] = nil
+        onChange?(.notes(meeting))
     }
 
     func revealInFinder(_ meeting: Meeting) {
@@ -365,24 +369,9 @@ final class Store: ObservableObject {
 
     /// One Markdown blob with everything, for pasting into Claude.
     func exportForClaude(_ meeting: Meeting) -> String {
-        var out = "# \(meeting.title)\n\n"
-        out += "- Date: \(Fmt.dateTime.string(from: meeting.startedAt))\n"
-        out += "- Duration: \(Fmt.duration(meeting.durationSeconds))\n"
-        if let p = project(meeting.projectID) { out += "- Project: \(p.name)\n" }
-        out += "\n"
-        if let summary = summaryExport(for: meeting) {
-            out += summary.trimmingCharacters(in: .whitespacesAndNewlines) + "\n\n"
-        } else if !meeting.actionItems.isEmpty {
-            out += "## Action items\n\n" + actionItemsMarkdown(meeting) + "\n\n"
-        }
-        let notes = notes(for: meeting).trimmingCharacters(in: .whitespacesAndNewlines)
-        if !notes.isEmpty { out += "## My notes\n\n\(notes)\n\n" }
-        let segs = transcript(for: meeting)
-        if !segs.isEmpty {
-            out += "## Transcript\n\n"
-            for s in segs { out += "**[\(Fmt.timestamp(s.start))] \(meeting.displayName(forSpeaker: s.speaker)):** \(s.text)\n\n" }
-        }
-        return out
+        MeetingDocuments.everything(meeting: meeting, projectName: project(meeting.projectID)?.name,
+                                    summaryMarkdown: summaryMarkdown(for: meeting), notes: notes(for: meeting),
+                                    transcript: transcript(for: meeting))
     }
 
     // MARK: - Search
