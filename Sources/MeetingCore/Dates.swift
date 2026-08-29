@@ -39,6 +39,25 @@ public enum LocalDate {
         return EventDate(date: date, hasTime: hasTime, timeZone: zone)
     }
 
+    /// The business-hours conventions the prompt also spells out, for when the model names the part of the day in
+    /// `due` ("end of day Friday") but hands back a date-only `due_date` anyway.
+    public static func impliedTime(in text: String?) -> (hour: Int, minute: Int)? {
+        guard let t = text?.lowercased() else { return nil }
+        let table: [([String], (Int, Int))] = [
+            (["end of business", "end of day", "end of the day", "eod", "cob", "close of business", "by end"], (17, 0)),
+            (["first thing", "start of day", "start of the day"], (9, 0)),
+            (["noon", "lunch", "midday"], (12, 0)),
+            (["morning"], (10, 0)),
+            (["afternoon"], (14, 0)),
+            (["evening", "tonight"], (18, 0)),
+        ]
+        for (words, time) in table where words.contains(where: { word in
+            // Whole-word match so "eod" doesn't fire inside "geodesic".
+            t.range(of: "\\b\(NSRegularExpression.escapedPattern(for: word))\\b", options: .regularExpression) != nil
+        }) { return time }
+        return nil
+    }
+
     /// Between the start of the meeting's day and three years out; anything else is a model slip, not a date.
     static func plausible(_ d: EventDate, for meeting: Meeting, in zone: TimeZone) -> Bool {
         var cal = Calendar(identifier: .gregorian)
@@ -55,6 +74,13 @@ extension MeetingSummary {
             let task = item.task.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !task.isEmpty else { return nil }
             var due = LocalDate.parse(item.dueDate, in: zone)
+            if let d = due, !d.hasTime, let (hour, minute) = LocalDate.impliedTime(in: item.due) {
+                var cal = Calendar(identifier: .gregorian)
+                cal.timeZone = zone
+                if let at = cal.date(bySettingHour: hour, minute: minute, second: 0, of: d.date) {
+                    due = EventDate(date: at, hasTime: true, timeZone: zone)
+                }
+            }
             if let d = due, !LocalDate.plausible(d, for: meeting, in: zone) { due = nil }
             return ActionItem(task: task, owner: Self.clean(item.owner), due: Self.clean(item.due), dueDate: due)
         }
