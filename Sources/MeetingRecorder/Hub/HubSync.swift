@@ -94,6 +94,7 @@ final class HubSync: ObservableObject {
             hubSettings = try? await client.settings()
             startEventLoop()
             startPullLoop()
+            await reconcileProjects()
             await pushDirty()
             await pull()
         } catch let error as HubClientError where error.isUnauthorized {
@@ -215,10 +216,12 @@ final class HubSync: ObservableObject {
                 return
             } catch let error where error.isConnectivityProblem {
                 attempt += 1
+                Log.hub.warning("hub unreachable while processing: \(error.localizedDescription)")
                 markOffline(error)
                 setStatus(id, .uploading, progress: "Waiting for the hub — retrying (\(error.localizedDescription))")
                 try? await Task.sleep(nanoseconds: UInt64(min(30 * attempt, 120)) * 1_000_000_000)
             } catch {
+                Log.hub.error("hub processing failed: \(error.localizedDescription)")
                 fail(id, error.localizedDescription)
                 return
             }
@@ -315,6 +318,11 @@ final class HubSync: ObservableObject {
 
     private func ensureProjectOnHub(_ projectID: UUID, client: HubClient) async throws {
         guard let project = store.project(projectID) else { return }
+        if let remote = try? await client.projects(), !remote.contains(where: { $0.project.id == project.id }),
+           remote.contains(where: { $0.project.name.caseInsensitiveCompare(project.name) == .orderedSame }) {
+            await reconcileProjects()
+            return
+        }
         _ = try await client.createProject(CreateProjectRequest(id: project.id, name: project.name, context: store.projectContext(project.id)))
     }
 
@@ -377,6 +385,40 @@ final class HubSync: ObservableObject {
         apply(detail)
     }
 
+    // MARK: - Projects
+
+    /// Line up projects on both sides. A local project with the same name as a hub project (and an id the hub
+    /// doesn't know) takes the hub's id, so "Inbox" here and "Inbox" there are one project. Everything else is
+    /// created on whichever side is missing it.
+    func reconcileProjects() async {
+        guard isEnabled, let client else { return }
+        do {
+            let remote = try await client.projects()
+            let remoteIDs = Set(remote.map(\.project.id))
+            applyingRemote = true
+            for rp in remote {
+                if store.project(rp.project.id) != nil { continue }
+                if let local = store.projects.first(where: { !remoteIDs.contains($0.id) && $0.name.caseInsensitiveCompare(rp.project.name) == .orderedSame }) {
+                    Log.hub.info("adopting hub id for project “\(local.name)”")
+                    store.adoptProjectID(local.id, newID: rp.project.id)
+                    dirtyProjects.remove(local.id)
+                    if store.projectContext(rp.project.id).isEmpty, !rp.context.isEmpty { store.setProjectContext(rp.project.id, rp.context) }
+                } else {
+                    store.createProject(id: rp.project.id, name: rp.project.name)
+                    if !rp.context.isEmpty { store.setProjectContext(rp.project.id, rp.context) }
+                }
+            }
+            applyingRemote = false
+            for p in store.projects where !remoteIDs.contains(p.id) {
+                _ = try await client.createProject(CreateProjectRequest(id: p.id, name: p.name, context: store.projectContext(p.id)))
+            }
+        } catch {
+            applyingRemote = false
+            Log.hub.error("project reconcile failed: \(error.localizedDescription)")
+            markOffline(error)
+        }
+    }
+
     // MARK: - Pull
 
     func pull() async {
@@ -385,6 +427,12 @@ final class HubSync: ObservableObject {
             let remoteProjects = try await client.projects()
             applyingRemote = true
             for rp in remoteProjects where store.project(rp.project.id) == nil && !dirtyProjects.contains(rp.project.id) {
+                if store.projects.contains(where: { $0.name.caseInsensitiveCompare(rp.project.name) == .orderedSame }) {
+                    applyingRemote = false
+                    await reconcileProjects()   // a same-named project appeared; merge instead of duplicating
+                    applyingRemote = true
+                    continue
+                }
                 store.createProject(id: rp.project.id, name: rp.project.name)
                 if !rp.context.isEmpty { store.setProjectContext(rp.project.id, rp.context) }
             }
@@ -406,6 +454,7 @@ final class HubSync: ObservableObject {
             lastPull = Date()
         } catch {
             applyingRemote = false
+            Log.hub.error("pull failed: \(error.localizedDescription)")
             markOffline(error)
         }
     }
@@ -436,7 +485,7 @@ final class HubSync: ObservableObject {
         for id in pendingDeletes {
             do { try await client.deleteMeeting(id); pendingDeletes.remove(id) }
             catch let e as HubClientError where !e.isConnectivityProblem { pendingDeletes.remove(id) }   // already gone
-            catch { markOffline(error); return }
+            catch { Log.hub.error("delete push failed: \(error.localizedDescription)"); markOffline(error); return }
         }
         for id in dirtyProjects {
             guard let p = store.project(id) else { dirtyProjects.remove(id); continue }
@@ -444,14 +493,14 @@ final class HubSync: ObservableObject {
                 _ = try await client.createProject(CreateProjectRequest(id: p.id, name: p.name, context: store.projectContext(p.id)))
                 _ = try await client.patchProject(p.id, PatchProjectRequest(name: p.name, context: store.projectContext(p.id)))
                 dirtyProjects.remove(id)
-            } catch { markOffline(error); return }
+            } catch { Log.hub.error("project push failed: \(error.localizedDescription)"); markOffline(error); return }
         }
         for id in dirtyMeetings {
             guard let m = store.meeting(id) else { dirtyMeetings.remove(id); continue }
             do {
                 try await push(m, client: client)
                 dirtyMeetings.remove(id)
-            } catch { markOffline(error); return }
+            } catch { Log.hub.error("push of “\(m.title)” failed: \(error.localizedDescription)"); markOffline(error); return }
         }
     }
 

@@ -104,7 +104,7 @@ GET    /events                              text/event-stream of HubEvent
 
 Wire types are the structs in `MeetingCore/API.swift`; dates are ISO-8601.
 
-## The app in hub mode (in progress)
+## The app in hub mode
 
 The app stays offline-first. Its local folder remains the UI's source of truth; the hub replaces *processing*:
 
@@ -114,7 +114,11 @@ The app stays offline-first. Its local folder remains the UI's source of truth; 
    then pulls the transcript, summary and action items into its files.
 3. Local edits (title, notes, action items, speaker names, project) are pushed as patches; edits made elsewhere
    (phone, web) arrive through `GET /meetings?since=` and events. Last write wins per field.
-4. No network? The meeting waits in `uploading` with "Waiting for network…" and retries; nothing is lost.
+4. No network? The meeting waits in `uploading` with "Waiting for the hub…" and retries with backoff; nothing is lost.
+5. Projects are matched by id, and on first connect by name: a local "Inbox" adopts the hub's "Inbox" id instead of
+   becoming "Inbox 2". Local projects the hub doesn't have are created there.
+6. `Settings → Upload existing meetings` pushes meetings processed before the hub existed (transcript, summary,
+   action items, notes, compressed audio) so other devices can see them.
 
 ## Roadmap
 

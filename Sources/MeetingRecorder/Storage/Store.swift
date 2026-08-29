@@ -182,6 +182,20 @@ final class Store: ObservableObject {
         if projects.isEmpty { createProject(name: Store.inboxName) }
     }
 
+    /// Give a local project the id the hub uses for it (same name, different id). Folder and meetings stay put.
+    func adoptProjectID(_ oldID: UUID, newID: UUID) {
+        guard oldID != newID, var p = project(oldID), let dir = projectFolders[oldID], project(newID) == nil else { return }
+        p.id = newID
+        writeJSON(p, to: dir.appendingPathComponent("project.json"))
+        projectFolders[newID] = dir
+        projectFolders[oldID] = nil
+        if let i = projects.firstIndex(where: { $0.id == oldID }) { projects[i] = p }
+        for i in meetings.indices where meetings[i].projectID == oldID {
+            meetings[i].projectID = newID
+            if let mdir = meetingFolders[meetings[i].id] { writeJSON(meetings[i], to: mdir.appendingPathComponent("meeting.json")) }
+        }
+    }
+
     func projectContext(_ id: UUID) -> String {
         guard let dir = projectFolders[id] else { return "" }
         return (try? String(contentsOf: dir.appendingPathComponent("CONTEXT.md"), encoding: .utf8)) ?? ""

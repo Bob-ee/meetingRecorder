@@ -87,6 +87,17 @@ enum HubQueries {
                              summaryMarkdown: summary?.markdown, notes: meeting.notes, audio: audio, job: job?.dto)
     }
 
+    /// ISO-8601 (with or without fractional seconds) or seconds since 1970.
+    static func date(_ raw: String?) -> Date? {
+        guard let raw, !raw.isEmpty else { return nil }
+        let iso = ISO8601DateFormatter()
+        if let d = iso.date(from: raw) { return d }
+        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let d = iso.date(from: raw) { return d }
+        if let secs = Double(raw) { return Date(timeIntervalSince1970: secs) }
+        return nil
+    }
+
     static func uuid(_ req: Request, _ name: String) throws -> UUID {
         guard let id = req.parameters.get(name, as: UUID.self) else { throw Abort(.badRequest, reason: "bad \(name)") }
         return id
@@ -182,7 +193,7 @@ func meetingRoutes(_ r: RoutesBuilder) {
         let p = try req.principal
         var query = MeetingModel.query(on: req.db).filter(\.$workspace.$id == p.workspaceID).with(\.$actionItems)
         if let project = req.query[UUID.self, at: "project"] { query = query.filter(\.$project.$id == project) }
-        if let since = req.query[Date.self, at: "since"] { query = query.filter(\.$updatedAt >= since) }
+        if let since = HubQueries.date(req.query[String.self, at: "since"]) { query = query.filter(\.$updatedAt >= since) }
         let limit = req.query[Int.self, at: "limit"] ?? 1000
         return try await query.sort(\.$startedAt, .descending).limit(limit).all().map { $0.dto() }
     }
