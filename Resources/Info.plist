@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key><string>en</string>
+    <key>CFBundleExecutable</key><string>MeetingRecorder</string>
+    <key>CFBundleIdentifier</key><string>local.meetingrecorder.app</string>
+    <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+    <key>CFBundleName</key><string>Meeting Recorder</string>
+    <key>CFBundleDisplayName</key><string>Meeting Recorder</string>
+    <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleShortVersionString</key><string>0.1.0</string>
+    <key>CFBundleVersion</key><string>1</string>
+    <key>CFBundleIconFile</key><string>AppIcon</string>
+    <key>LSMinimumSystemVersion</key><string>15.0</string>
+    <key>LSApplicationCategoryType</key><string>public.app-category.productivity</string>
+    <key>NSHighResolutionCapable</key><true/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Meeting Recorder records your microphone during meetings so your side of the conversation can be transcribed on this Mac.</string>
+    <key>NSAudioCaptureUsageDescription</key>
+    <string>Meeting Recorder captures the audio played by meeting apps (Zoom, Google Meet, Slack) so the other participants can be transcribed on this Mac.</string>
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key><string>Audio recording</string>
+            <key>CFBundleTypeRole</key><string>Viewer</string>
+            <key>LSHandlerRank</key><string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>public.audio</string>
+                <string>public.movie</string>
+                <string>public.mpeg-4</string>
+                <string>com.apple.m4a-audio</string>
+                <string>public.mp3</string>
+                <string>com.microsoft.waveform-audio</string>
+            </array>
+        </dict>
+    </array>
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key><string>local.meetingrecorder.app</string>
+            <key>CFBundleURLSchemes</key><array><string>meetingrecorder</string></array>
+        </dict>
+    </array>
+</dict>
+</plist>
