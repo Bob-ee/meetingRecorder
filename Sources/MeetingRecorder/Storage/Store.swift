@@ -94,8 +94,12 @@ final class Store: ObservableObject {
             return !fm.fileExists(atPath: dir.appendingPathComponent("meeting.json").path)
         }
         for m in goneMeetings {
+            let projectStillThere = projectFolders[m.projectID].map { fm.fileExists(atPath: $0.path) } ?? false
             meetingFolders[m.id] = nil
             textCache[m.id] = nil
+            // A meeting folder removed in Finder while its project is still here is a deliberate delete —
+            // tell the hub. A vanished project folder (unmounted drive, iCloud eviction) is not.
+            if projectStillThere { onChange?(.deletedMeeting(m.id)) }
         }
         if !goneMeetings.isEmpty { meetings.removeAll { m in goneMeetings.contains { $0.id == m.id } } }
         let goneProjects = projects.filter { p in
