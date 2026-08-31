@@ -25,7 +25,7 @@ struct ActionItemsOverview: View {
                     ForEach(meetings) { meeting in
                         Section {
                             ForEach(showDone ? meeting.actionItems : meeting.openActionItems) { item in
-                                ActionItemRow(item: item) { updated in
+                                ActionItemRow(item: item, meeting: meeting) { updated in
                                     var m = meeting
                                     if let i = m.actionItems.firstIndex(where: { $0.id == item.id }) { m.actionItems[i] = updated }
                                     store.update(m)

@@ -14,6 +14,7 @@ func configure(_ app: Application) async throws {
 
     app.databases.use(.sqlite(.file(paths.database.path)), as: .sqlite)
     app.migrations.add(CreateSchemaV1())
+    app.migrations.add(AddCalendarFieldsV2())
     try await app.autoMigrate()
 
     ContentConfiguration.global.use(encoder: wireEncoder, for: .json)

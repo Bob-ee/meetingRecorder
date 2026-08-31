@@ -123,8 +123,12 @@ final class Pipeline: ObservableObject {
                 if fresh.titleIsAuto, let title = summary.title?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty {
                     fresh.title = title
                 }
-                store.saveSummary(Prompts.renderSummary(summary, meeting: fresh, projectName: request.projectName), for: fresh)
-                fresh.actionItems = ActionItems.merge(existing: fresh.actionItems, fresh: summary.actionItems)
+                let freshItems = summary.resolvedActionItems(for: fresh)
+                let freshEvents = summary.resolvedEvents(for: fresh)
+                store.saveSummary(Prompts.renderSummary(summary, meeting: fresh, projectName: request.projectName,
+                                                        actionItems: freshItems, events: freshEvents), for: fresh)
+                fresh.actionItems = ActionItems.merge(existing: fresh.actionItems, fresh: freshItems)
+                fresh.events = MeetingEvents.merge(existing: fresh.events, fresh: freshEvents)
                 fresh.status = .ready
                 fresh.errorMessage = nil
                 store.update(fresh)

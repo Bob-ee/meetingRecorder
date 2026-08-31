@@ -360,9 +360,12 @@ final class HubSync: ObservableObject {
             local.titleIsAuto = remote.titleIsAuto
             local.speakerNames = remote.speakerNames
             local.actionItems = remote.actionItems
+            // A hub from before events existed always sends none; don't let that erase ours.
+            if !remote.events.isEmpty || local.events.isEmpty { local.events = remote.events }
         } else {
             // Keep our unsent edits, but take new items the hub found.
-            local.actionItems = ActionItems.merge(existing: local.actionItems, fresh: remote.actionItems.map { MeetingSummary.Item(owner: $0.owner, task: $0.task, due: $0.due) })
+            local.actionItems = ActionItems.merge(existing: local.actionItems, fresh: remote.actionItems)
+            local.events = MeetingEvents.merge(existing: local.events, fresh: remote.events)
         }
         local.status = remote.status
         local.errorMessage = remote.errorMessage
@@ -511,7 +514,8 @@ final class HubSync: ObservableObject {
             durationSeconds: m.durationSeconds, source: m.source, importedFileName: m.importedFileName))
         _ = try await client.patchMeeting(m.id, PatchMeetingRequest(
             title: m.titleIsAuto ? nil : m.title, titleIsAuto: m.titleIsAuto, projectID: m.projectID,
-            notes: store.notes(for: m), speakerNames: m.speakerNames, durationSeconds: m.durationSeconds))
+            notes: store.notes(for: m), speakerNames: m.speakerNames, durationSeconds: m.durationSeconds,
+            events: m.events))
         _ = try await client.replaceActionItems(m.id, m.actionItems)
     }
 

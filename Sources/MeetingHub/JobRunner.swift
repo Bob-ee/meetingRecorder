@@ -169,18 +169,22 @@ actor JobRunner {
             meeting.title = title
             snapshot.title = title
         }
-        let markdown = Prompts.renderSummary(summary, meeting: snapshot, projectName: project.name)
+        // Dates in the reply are read in this machine's zone — the same one the prompt described the meeting in.
+        let freshItems = summary.resolvedActionItems(for: snapshot)
+        let freshEvents = summary.resolvedEvents(for: snapshot)
+        let markdown = Prompts.renderSummary(summary, meeting: snapshot, projectName: project.name, actionItems: freshItems, events: freshEvents)
         if let existing = try await SummaryModel.query(on: db).filter(\.$meeting.$id == meetingID).first() {
             try await existing.delete(on: db)
         }
         try await SummaryModel(meetingID: meetingID, summary: summary, markdown: markdown, provider: summarizer.displayName).save(on: db)
 
         let existingItems = try await ActionItemModel.query(on: db).filter(\.$meeting.$id == meetingID).sort(\.$position).all()
-        let merged = ActionItems.merge(existing: existingItems.map(\.dto), fresh: summary.actionItems)
+        let merged = ActionItems.merge(existing: existingItems.map(\.dto), fresh: freshItems)
         for row in existingItems { try await row.delete(on: db) }
         for (i, item) in merged.enumerated() {
             try await ActionItemModel(item, meetingID: meetingID, position: i).save(on: db)
         }
+        meeting.events = MeetingEvents.merge(existing: meeting.events, fresh: freshEvents)
         meeting.meetingStatus = .ready
         meeting.errorMessage = nil
         try await meeting.save(on: db)

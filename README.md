@@ -12,6 +12,7 @@ Meetings are organized into **Projects → Meetings**, the way Claude organizes 
 | Transcribe | NVIDIA Parakeet TDT 0.6B v3 via [FluidAudio](https://github.com/FluidInference/FluidAudio) on the Neural Engine, plus offline speaker diarization | free, ~600 MB one-time model download |
 | Summarize | `claude -p` (Claude Code headless) on your Claude subscription — no API key | included in your plan |
 | Store | Plain Markdown + JSON under `~/Meetings/<Project>/<date title>/` — point Claude Code at the folder | — |
+| Calendar | Dates the summary pins down (a follow-up call, a launch, an action item's deadline) become one-click events in Calendar or Reminders (EventKit) | free |
 
 Because your mic is its own track, everything you say is labeled with your name exactly; diarization only has to
 separate the remote participants ("Speaker 1", "Speaker 2", … — rename them in the Transcript tab).
@@ -37,6 +38,11 @@ identity in your keychain (falling back to ad-hoc); override with `SIGN_IDENTITY
    Markdown, so they paste with headings/bold/checklists intact into Gmail, Mail, Docs, Slack, Notes — and as plain
    Markdown into editors or Claude. The ⋯ menu has **Copy Everything** for the whole meeting in one go. Or just point
    Claude Code at `~/Meetings`.
+4. Anything with a date gets a calendar affordance. Follow-up meetings, demos, launches and the like the summary
+   found show up as **Upcoming** cards at the top of the summary; an action item whose deadline could be pinned to a
+   day gets a calendar chip. Click either for a small event card — adjust the title, time or calendar, then
+   **Add to Calendar** (action items can also go to **Reminders**). The app asks for calendar access the first time.
+   Only dates the summarizer could resolve with confidence are offered; "sometime next week" stays as words.
 
 Turn on *Detect meetings automatically* (Settings / menu bar) and the app notices when another app opens the
 microphone and asks whether to record.

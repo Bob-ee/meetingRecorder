@@ -148,15 +148,21 @@ struct SummaryTab: View {
 
     var body: some View {
         if let md = store.summaryMarkdown(for: meeting) {
+            let export = store.summaryExport(for: meeting) ?? md
             VStack(spacing: 0) {
-                TabBar(copy: CopyButton(title: "Copy summary") { store.summaryExport(for: meeting) ?? md }) {
+                TabBar(copy: CopyButton(title: "Copy summary") { export }) {
                     Text("Overview, decisions, action items and open questions").foregroundStyle(.secondary)
                 }
                 ScrollView {
-                    MarkdownView(markdown: store.summaryExport(for: meeting) ?? md)
-                        .padding(.horizontal, 20).padding(.vertical, 16)
-                        .frame(maxWidth: 760, alignment: .leading)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    VStack(alignment: .leading, spacing: 20) {
+                        // Dates the summary found, as one-click calendar events; the same list is in the
+                        // Markdown as "## Upcoming", so leave that section out of what's rendered below.
+                        if !meeting.events.isEmpty { UpcomingEventsView(meeting: meeting) }
+                        MarkdownView(markdown: MeetingDocuments.removingSection(export, titled: MeetingDocuments.upcomingHeading))
+                    }
+                    .padding(.horizontal, 20).padding(.vertical, 16)
+                    .frame(maxWidth: 760, alignment: .leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
         } else {
@@ -281,7 +287,7 @@ struct ActionItemsTab: View {
             } else {
                 List {
                     ForEach(meeting.actionItems) { item in
-                        ActionItemRow(item: item) { updated in
+                        ActionItemRow(item: item, meeting: meeting) { updated in
                             var m = meeting
                             if let i = m.actionItems.firstIndex(where: { $0.id == item.id }) { m.actionItems[i] = updated }
                             store.update(m)
@@ -317,8 +323,10 @@ struct ActionItemsTab: View {
 
 struct ActionItemRow: View {
     let item: ActionItem
+    let meeting: Meeting
     let update: (ActionItem) -> Void
     let delete: () -> Void
+    @State private var showingCalendar = false
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -328,7 +336,9 @@ struct ActionItemRow: View {
                 Text(item.task).strikethrough(item.done).foregroundStyle(item.done ? .secondary : .primary)
                 HStack(spacing: 8) {
                     if let owner = item.owner, !owner.isEmpty { Label(owner, systemImage: "person") }
-                    if let due = item.due, !due.isEmpty { Label(due, systemImage: "calendar") }
+                    if item.dueLabel != nil || item.calendarAddedAt != nil {
+                        DueDateChip(item: item, meeting: meeting, update: update)
+                    }
                     if item.isManual { Text("added by you").italic() }
                 }
                 .font(.caption).foregroundStyle(.secondary)
@@ -336,7 +346,19 @@ struct ActionItemRow: View {
             Spacer()
         }
         .padding(.vertical, 2)
-        .contextMenu { Button("Delete", role: .destructive, action: delete) }
+        .contextMenu {
+            Button("Add to Calendar…") { showingCalendar = true }
+            Divider()
+            Button("Delete", role: .destructive, action: delete)
+        }
+        .popover(isPresented: $showingCalendar, arrowEdge: .bottom) {
+            AddToCalendarPopover(draft: EventDraft(item: item, meeting: meeting), offerReminders: true,
+                                 alreadyAdded: item.calendarAddedAt != nil) { _ in
+                var i = item
+                i.calendarAddedAt = Date()
+                update(i)
+            }
+        }
     }
 }
 

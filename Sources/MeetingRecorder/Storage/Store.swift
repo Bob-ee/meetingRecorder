@@ -345,7 +345,7 @@ final class Store: ObservableObject {
     /// summary.md with its "Action items" section swapped for the live list (done states, manual additions).
     func summaryExport(for meeting: Meeting) -> String? {
         guard let md = summaryMarkdown(for: meeting) else { return nil }
-        return MeetingDocuments.summaryExport(summaryMarkdown: md, actionItems: meeting.actionItems)
+        return MeetingDocuments.summaryExport(summaryMarkdown: md, actionItems: meeting.actionItems, events: meeting.events)
     }
 
     func saveSummary(_ markdown: String, for meeting: Meeting) {
@@ -391,6 +391,7 @@ final class Store: ObservableObject {
         if let t = textCache[m.id] { return t }
         var parts = [m.title]
         parts.append(contentsOf: m.actionItems.map { $0.task })
+        parts.append(contentsOf: m.events.map { $0.title })
         if let s = summaryMarkdown(for: m) { parts.append(s) }
         parts.append(notes(for: m))
         parts.append(contentsOf: transcript(for: m).map { $0.text })

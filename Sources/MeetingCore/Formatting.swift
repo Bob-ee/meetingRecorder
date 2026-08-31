@@ -22,6 +22,46 @@ public enum Fmt {
         return f
     }()
 
+    public enum WhenStyle { case short, long }
+
+    /// A resolved date for people: "Thu, Sep 4, 2026 at 3:00 PM – 4:00 PM", or "Thu, Sep 4, 2026" for a whole day.
+    /// `.short` drops the year when it's this year: "Thu, Sep 4, 3:00 PM". Times are shown in the viewer's zone;
+    /// whole days stay on the day they were resolved to.
+    public static func when(_ d: EventDate, end: Date?, style: WhenStyle = .long) -> String {
+        let zone = d.hasTime ? TimeZone.current : d.tz
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = zone
+        let thisYear = cal.component(.year, from: d.date) == cal.component(.year, from: Date())
+        let day = DateFormatter()
+        day.timeZone = zone
+        day.setLocalizedDateFormatFromTemplate(style == .short && thisYear ? "EEE MMM d" : "EEE MMM d yyyy")
+        var out = day.string(from: d.date)
+        guard d.hasTime else { return out }
+        let time = DateFormatter()
+        time.timeZone = zone
+        time.timeStyle = .short
+        time.dateStyle = .none
+        out += (style == .short ? ", " : " at ") + time.string(from: d.date)
+        if let end, end > d.date, style == .long {
+            out += " – " + (cal.isDate(end, inSameDayAs: d.date) ? time.string(from: end) : "\(day.string(from: end)) \(time.string(from: end))")
+        }
+        return out
+    }
+
+    /// For the summarizer: "Thursday, August 28, 2026 at 4:30 PM (EDT)" — a weekday and a zone, so "Friday" and
+    /// "3 PM" can be resolved.
+    public static func promptDate(_ date: Date, in zone: TimeZone) -> String {
+        let f = DateFormatter()
+        f.timeZone = zone
+        f.setLocalizedDateFormatFromTemplate("EEEE MMMM d yyyy")
+        let t = DateFormatter()
+        t.timeZone = zone
+        t.timeStyle = .short
+        t.dateStyle = .none
+        let abbrev = zone.abbreviation(for: date) ?? zone.identifier
+        return "\(f.string(from: date)) at \(t.string(from: date)) (\(abbrev), \(zone.identifier))"
+    }
+
     public static func duration(_ seconds: Double) -> String {
         let s = Int(seconds.rounded())
         let h = s / 3600, m = (s % 3600) / 60, sec = s % 60
