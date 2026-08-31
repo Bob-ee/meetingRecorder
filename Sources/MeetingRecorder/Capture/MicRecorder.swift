@@ -6,7 +6,8 @@ import AVFoundation
 /// Records the default input device via AVAudioEngine as a mono track. When echo cancellation is on,
 /// Apple's voice-processing unit strips speaker output out of the mic signal so remote participants
 /// don't leak into the "You" track. (Voice processing can report odd multi-channel formats — e.g. nine
-/// identical channels — which is why everything is mixed down to mono before hitting disk.)
+/// identical channels — which is why everything is mixed down to mono before hitting disk. It also
+/// ducks other system audio, which we turn down to the minimum the API allows.)
 final class MicRecorder {
     private(set) var isRunning = false
     private var engine: AVAudioEngine?
@@ -26,7 +27,16 @@ final class MicRecorder {
         let engine = AVAudioEngine()
         let input = engine.inputNode
         if echoCancellation {
-            do { try input.setVoiceProcessingEnabled(true) } catch {
+            do {
+                try input.setVoiceProcessingEnabled(true)
+                // The voice-processing unit ducks everything else the machine is playing — the same
+                // way a FaceTime call quiets your music. Left at its default that costs the meeting
+                // you're sitting in more than half its volume, so ask for the least ducking Apple offers.
+                input.voiceProcessingOtherAudioDuckingConfiguration = .init(
+                    enableAdvancedDucking: false,
+                    duckingLevel: .min
+                )
+            } catch {
                 Log.capture.error("voice processing unavailable: \(error.localizedDescription)")
             }
         }
