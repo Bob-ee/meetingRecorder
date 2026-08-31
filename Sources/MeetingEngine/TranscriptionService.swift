@@ -63,24 +63,46 @@ public actor TranscriptionService: Transcriber {
         var remoteWords: [Word] = []
         var trackNotes: [String] = []
 
+        // Both tracks are loaded up front so the microphone can have the meeting's own audio
+        // subtracted out of it before anything is transcribed.
+        var micSamples: [Float] = []
+        var remoteSamples: [Float] = []
+
         if let micURL, FileManager.default.fileExists(atPath: micURL.path) {
-            status("Transcribing your microphone track…")
             let loaded = try AudioLoader.loadMono16k(micURL)
             Log.pipeline.info("mic track: \(loaded.seconds)s rms=\(loaded.rms)")
             trackNotes.append(String(format: "mic %.1fs%@", loaded.seconds, loaded.rms < 0.001 ? " (silent)" : ""))
-            let samples = loaded.samples
-            if samples.count > 16_000 {
-                let timings = try await transcribeWords(samples, asr: asr)
-                micWords = timings.map { Word(text: $0.word, start: $0.startTime, end: $0.endTime, speaker: userLabel) }
-            }
+            micSamples = loaded.samples
         }
-
         if let remoteURL, FileManager.default.fileExists(atPath: remoteURL.path) {
-            status("Transcribing other participants…")
             let loaded = try AudioLoader.loadMono16k(remoteURL)
             Log.pipeline.info("remote track: \(loaded.seconds)s rms=\(loaded.rms)")
             trackNotes.append(String(format: "%@ %.1fs%@", remoteURL.lastPathComponent.hasPrefix("import") ? "imported audio" : "system audio", loaded.seconds, loaded.rms < 0.001 ? " (silent)" : ""))
-            let samples = loaded.samples
+            remoteSamples = loaded.samples
+        }
+
+        if micSamples.count > 16_000, remoteSamples.count > 16_000 {
+            status("Removing speaker echo from your microphone…")
+            let cancelled = EchoCanceller.removeEcho(from: micSamples, reference: remoteSamples,
+                                                     rate: AudioLoader.targetRate)
+            Log.pipeline.info("echo cancellation: delay \(cancelled.delaySamples) samples, ERLE \(cancelled.erleDB) dB")
+            // Below a few dB the solve found no echo path worth subtracting — usually headphones, where
+            // there is nothing to cancel. Keep the original rather than spend quality on a guess.
+            if cancelled.erleDB >= 3 {
+                micSamples = cancelled.samples
+                trackNotes.append(String(format: "echo -%.0f dB", cancelled.erleDB))
+            }
+        }
+
+        if micSamples.count > 16_000 {
+            status("Transcribing your microphone track…")
+            let timings = try await transcribeWords(micSamples, asr: asr)
+            micWords = timings.map { Word(text: $0.word, start: $0.startTime, end: $0.endTime, speaker: userLabel) }
+        }
+
+        do {
+            status("Transcribing other participants…")
+            let samples = remoteSamples
             if samples.count > 16_000 {
                 let timings = try await transcribeWords(samples, asr: asr)
                 var labels: [String] = Array(repeating: "Speaker 1", count: timings.count)

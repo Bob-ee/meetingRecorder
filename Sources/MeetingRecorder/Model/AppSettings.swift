@@ -28,7 +28,7 @@ final class AppSettings: ObservableObject {
         claudePath = defaults.string(forKey: "claudePath") ?? ""
         claudeModel = defaults.string(forKey: "claudeModel") ?? "sonnet"
         asrVersion = defaults.string(forKey: "asrVersion") ?? "v3"
-        echoCancellation = defaults.object(forKey: "echoCancellation") as? Bool ?? true
+        echoCancellation = defaults.object(forKey: "echoCancellation") as? Bool ?? false
         autoDetect = defaults.object(forKey: "autoDetect") as? Bool ?? true
         lastProjectID = defaults.string(forKey: "lastProjectID") ?? ""
         processingMode = defaults.string(forKey: "processingMode") ?? ProcessingMode.local.rawValue
