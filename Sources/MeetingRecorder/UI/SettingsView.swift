@@ -57,7 +57,7 @@ struct SettingsView: View {
                     }
                 }
                 Toggle("Echo cancellation on the mic track", isOn: $settings.echoCancellation)
-                Text("Keeps other people's voices (from your speakers) out of your mic track. macOS quiets other audio a little while this is on — turn it off if the meeting sounds too soft or your mic sounds odd.")
+                Text("Strips speaker bleed from your mic track in realtime. macOS quiets ALL other audio while this runs — including the meeting you're in — and offers no way to turn that off, so it's off by default. Transcripts already drop echoed speech after recording, so you rarely need this.")
                     .font(.caption).foregroundStyle(.secondary)
                 if settings.mode == .local {
                     HStack {

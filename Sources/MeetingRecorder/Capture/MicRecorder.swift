@@ -30,8 +30,9 @@ final class MicRecorder {
             do {
                 try input.setVoiceProcessingEnabled(true)
                 // The voice-processing unit ducks everything else the machine is playing — the same
-                // way a FaceTime call quiets your music. Left at its default that costs the meeting
-                // you're sitting in more than half its volume, so ask for the least ducking Apple offers.
+                // way a FaceTime call quiets your music — and Apple exposes no way to turn that off;
+                // `.min` is the floor and it is still plainly audible. That is why this is off by
+                // default and why echo is dealt with after the fact, in TranscriptionService.
                 input.voiceProcessingOtherAudioDuckingConfiguration = .init(
                     enableAdvancedDucking: false,
                     duckingLevel: .min

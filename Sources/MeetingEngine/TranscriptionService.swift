@@ -59,7 +59,8 @@ public actor TranscriptionService: Transcriber {
     public func transcribe(micURL: URL?, remoteURL: URL?, userLabel: String,
                            status: @escaping @Sendable (String) -> Void) async throws -> [TranscriptSegment] {
         guard let asr else { throw TranscriptionError.notReady }
-        var words: [Word] = []
+        var micWords: [Word] = []
+        var remoteWords: [Word] = []
         var trackNotes: [String] = []
 
         if let micURL, FileManager.default.fileExists(atPath: micURL.path) {
@@ -70,7 +71,7 @@ public actor TranscriptionService: Transcriber {
             let samples = loaded.samples
             if samples.count > 16_000 {
                 let timings = try await transcribeWords(samples, asr: asr)
-                words += timings.map { Word(text: $0.word, start: $0.startTime, end: $0.endTime, speaker: userLabel) }
+                micWords = timings.map { Word(text: $0.word, start: $0.startTime, end: $0.endTime, speaker: userLabel) }
             }
         }
 
@@ -93,17 +94,67 @@ public actor TranscriptionService: Transcriber {
                     }
                 }
                 for (i, t) in timings.enumerated() {
-                    words.append(Word(text: t.word, start: t.startTime, end: t.endTime, speaker: labels[i]))
+                    remoteWords.append(Word(text: t.word, start: t.startTime, end: t.endTime, speaker: labels[i]))
                 }
             }
         }
 
+        let keptMic = Self.removingEcho(from: micWords, matching: remoteWords)
+        if keptMic.count < micWords.count {
+            Log.pipeline.info("echo filter: dropped \(micWords.count - keptMic.count) of \(micWords.count) mic words that repeated the other track")
+        }
+        var words = keptMic + remoteWords
         words.sort { $0.start < $1.start }
         let segments = Self.utterances(from: words)
         guard !segments.isEmpty else {
             throw TranscriptionError.noSpeech(trackNotes.isEmpty ? "no audio tracks found" : trackNotes.joined(separator: ", "))
         }
         return segments
+    }
+
+    /// Your speakers bleed into your microphone, so everyone else gets transcribed twice — once on
+    /// the system track where they belong, and once on the mic track wearing your name. Apple's
+    /// voice-processing unit strips that in realtime, but it ducks every other sound on the machine
+    /// while it runs and offers no way to turn that off, so we do it here instead. Both tracks share
+    /// a clock, which is what makes this possible: mic words that repeat what the system track heard
+    /// at the same moment are echo, not you.
+    ///
+    /// Matched in runs rather than word by word — you and a remote speaker both saying "yeah" at the
+    /// same instant is a coincidence worth keeping; four words in a row lining up is not.
+    static func removingEcho(from micWords: [Word], matching remoteWords: [Word],
+                             tolerance: Double = 0.6, minimumRun: Int = 3) -> [Word] {
+        guard !micWords.isEmpty, !remoteWords.isEmpty else { return micWords }
+
+        // Bucket the remote words by second so each mic word costs a dictionary hit, not a scan.
+        var buckets: [Int: [Word]] = [:]
+        for w in remoteWords {
+            let lo = Int((w.start - tolerance).rounded(.down))
+            let hi = Int((w.end + tolerance).rounded(.down))
+            for second in lo...max(lo, hi) { buckets[second, default: []].append(w) }
+        }
+
+        let echoed = micWords.map { mic -> Bool in
+            let key = normalized(mic.text)
+            guard !key.isEmpty, let candidates = buckets[Int(mic.start.rounded(.down))] else { return false }
+            return candidates.contains {
+                normalized($0.text) == key && mic.start >= $0.start - tolerance && mic.start <= $0.end + tolerance
+            }
+        }
+
+        var keep = [Bool](repeating: true, count: micWords.count)
+        var i = 0
+        while i < echoed.count {
+            guard echoed[i] else { i += 1; continue }
+            var j = i
+            while j < echoed.count, echoed[j] { j += 1 }
+            if j - i >= minimumRun { for k in i..<j { keep[k] = false } }
+            i = j
+        }
+        return zip(micWords, keep).filter(\.1).map(\.0)
+    }
+
+    private static func normalized(_ text: String) -> String {
+        text.lowercased().filter { $0.isLetter || $0.isNumber }
     }
 
     private func transcribeWords(_ samples: [Float], asr: AsrManager) async throws -> [WordTiming] {
