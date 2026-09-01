@@ -28,6 +28,9 @@ final class TimelineWriter {
     private var started = false
     private var finished = false
     private(set) var writeErrors = 0
+    /// Set up only when a source arrives at a different rate than the track — see `prepared(_:)`.
+    private var resampler: AVAudioConverter?
+    private var resamplerInput: AVAudioFormat?
 
     init(url: URL, sampleRate: Double, clock: RecordingClock, padThreshold: Double = 0.15) throws {
         guard let fmt = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: sampleRate, channels: 1, interleaved: false),
@@ -57,12 +60,12 @@ final class TimelineWriter {
     /// `hostTime` is when the first frame of `buffer` was captured; pass 0 if unknown.
     /// Safe to call from realtime audio threads: the mixdown copies, then work moves to a serial queue.
     func write(_ buffer: AVAudioPCMBuffer, hostTime: UInt64) {
-        guard let mono = AudioMix.mono(buffer, format: format) else { return }
+        guard let mono = prepared(buffer) else { return }
         let start: Double
         if hostTime != 0 {
             start = clock.elapsed(atHostTime: hostTime)
         } else {
-            start = clock.elapsedNow() - Double(buffer.frameLength) / sampleRate
+            start = clock.elapsedNow() - Double(buffer.frameLength) / buffer.format.sampleRate
         }
         queue.async { [self] in
             guard !finished else { return }
@@ -89,6 +92,33 @@ final class TimelineWriter {
             if gap > 0 { pad(frames: gap) }
             finished = true
         }
+    }
+
+    /// Folds a source buffer down to the track's mono format, resampling if the device came back at a
+    /// different rate — which is what a restart after a route change (headphones in, say) hands us.
+    private func prepared(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
+        let sourceRate = buffer.format.sampleRate
+        if sourceRate == sampleRate { return AudioMix.mono(buffer, format: format) }
+        guard let sourceMono = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: sourceRate,
+                                             channels: 1, interleaved: false),
+              let mono = AudioMix.mono(buffer, format: sourceMono) else { return nil }
+        if resamplerInput?.sampleRate != sourceRate {
+            resampler = AVAudioConverter(from: sourceMono, to: format)
+            resamplerInput = sourceMono
+        }
+        guard let resampler else { return nil }
+        let capacity = AVAudioFrameCount(Double(mono.frameLength) * sampleRate / sourceRate) + 64
+        guard let out = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: capacity) else { return nil }
+        var supplied = false
+        var error: NSError?
+        resampler.convert(to: out, error: &error) { _, status in
+            if supplied { status.pointee = .noDataNow; return nil }
+            supplied = true
+            status.pointee = .haveData
+            return mono
+        }
+        if error != nil { return nil }
+        return out.frameLength > 0 ? out : nil
     }
 
     private func pad(frames: Int64) {

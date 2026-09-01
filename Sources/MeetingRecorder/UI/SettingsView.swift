@@ -57,7 +57,7 @@ struct SettingsView: View {
                     }
                 }
                 Toggle("Echo cancellation on the mic track", isOn: $settings.echoCancellation)
-                Text("Strips speaker bleed from your mic track as you record. Off by default: the echo is removed after recording instead, which works as well and doesn't cost you anything. Turn this on only if a transcript comes back doubled — macOS quiets all other audio while it runs, including the meeting you're in, and gives no way to prevent that.")
+                Text("Strips speaker bleed from your mic track as you record. Leave this off: the echo is removed after recording instead, which works as well and costs nothing. Switching the mic to voice processing makes macOS quiet all other audio for the whole meeting, including the call you're in, and rebuild the audio graph underneath the system-audio tap — which has been known to take the recording down with it.")
                     .font(.caption).foregroundStyle(.secondary)
                 if settings.mode == .local {
                     HStack {

@@ -27,6 +27,15 @@ public struct LogChannel: Sendable {
         Log.emit("INFO", category, message)
     }
 
+    /// Like `info`, but kept on disk. os_log throws info-level messages away when the process exits, so
+    /// anything you'd want to read back after a recording went wrong has to go through here.
+    public func notice(_ message: String) {
+        #if canImport(os)
+        logger.notice("\(message, privacy: .public)")
+        #endif
+        Log.emit("NOTE", category, message)
+    }
+
     public func warning(_ message: String) {
         #if canImport(os)
         logger.warning("\(message, privacy: .public)")

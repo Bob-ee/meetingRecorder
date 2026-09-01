@@ -6,6 +6,20 @@ struct RecordingBar: View {
     @EnvironmentObject var store: Store
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            bar
+            if let warning = recorder.captureWarning {
+                Label(warning, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 6)
+            }
+        }
+        .background(.red.opacity(0.08))
+    }
+
+    private var bar: some View {
         HStack(spacing: 14) {
             Circle().fill(.red).frame(width: 10, height: 10)
                 .opacity(Int(recorder.elapsed * 2) % 2 == 0 ? 1 : 0.35)
@@ -27,7 +41,6 @@ struct RecordingBar: View {
             .tint(.red)
         }
         .padding(.horizontal, 14).padding(.vertical, 8)
-        .background(.red.opacity(0.08))
     }
 }
 

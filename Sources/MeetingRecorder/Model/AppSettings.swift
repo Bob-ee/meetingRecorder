@@ -21,6 +21,7 @@ final class AppSettings: ObservableObject {
     @Published var calendarID: String { didSet { defaults.set(calendarID, forKey: "calendarID") } }
 
     init() {
+        AppSettings.migrate(UserDefaults.standard)
         storageRoot = defaults.string(forKey: "storageRoot") ?? "~/Meetings"
         let accountName = NSFullUserName().trimmingCharacters(in: .whitespaces)
         let firstName = accountName.split(separator: " ").first.map(String.init) ?? ""
@@ -35,6 +36,20 @@ final class AppSettings: ObservableObject {
         hubPairingCode = defaults.string(forKey: "hubPairingCode") ?? ""
         hubLastSync = defaults.double(forKey: "hubLastSync")
         calendarID = defaults.string(forKey: "calendarID") ?? ""
+    }
+
+    /// Fixes up settings written by older builds. Runs before anything is read.
+    private static func migrate(_ defaults: UserDefaults) {
+        guard defaults.integer(forKey: "settingsVersion") < 1 else { return }
+        // Builds shipped between 2026-08-31 and 2026-09-01 switched realtime echo cancellation on for
+        // everyone as a stop-gap. Leaving that value behind breaks recording outright: putting the mic
+        // into voice processing makes CoreAudio re-enable the tap stream on the output device, which
+        // stops the IO thread the system-audio tap runs on, and the restart comes back EAGAIN. Both
+        // tracks then go silent a couple of seconds in. The offline canceller replaced it anyway.
+        if defaults.object(forKey: "echoCancellation") as? Bool == true {
+            defaults.set(false, forKey: "echoCancellation")
+        }
+        defaults.set(1, forKey: "settingsVersion")
     }
 
     var mode: ProcessingMode { ProcessingMode(rawValue: processingMode) ?? .local }
