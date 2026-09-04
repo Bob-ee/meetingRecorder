@@ -41,6 +41,9 @@ if [ -d "$SRC/.git" ]; then
   # other than the one it was cloned with fails with "pathspec ... did not match any file(s) known to git".
   git -C "$SRC" remote set-branches origin '*' 2>/dev/null || true
   git -C "$SRC" fetch -q --depth 1 origin "$BRANCH"
+  # This checkout is a build tree, never somewhere to edit, so anything a build left behind (a re-resolved
+  # Package.resolved, say) is discarded rather than blocking the update.
+  git -C "$SRC" reset -q --hard
   git -C "$SRC" checkout -q -B "$BRANCH" FETCH_HEAD
 else
   say "Fetching source…"
