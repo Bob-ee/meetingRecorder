@@ -281,20 +281,20 @@ struct ActionItemsTab: View {
                 let done = meeting.actionItems.count - open
                 Text(meeting.actionItems.isEmpty ? "No action items yet" : "\(open) open · \(done) done").foregroundStyle(.secondary)
             }
-            if meeting.actionItems.isEmpty {
+            let carried = carriedOver
+            if meeting.actionItems.isEmpty && carried.isEmpty {
                 Text("No action items").foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 List {
                     ForEach(meeting.actionItems) { item in
-                        ActionItemRow(item: item, meeting: meeting) { updated in
-                            var m = meeting
-                            if let i = m.actionItems.firstIndex(where: { $0.id == item.id }) { m.actionItems[i] = updated }
-                            store.update(m)
-                        } delete: {
-                            var m = meeting
-                            m.actionItems.removeAll { $0.id == item.id }
-                            store.update(m)
+                        own(item)
+                    }
+                    if !carried.isEmpty {
+                        Section("Still open from earlier meetings") {
+                            ForEach(carried, id: \.item.id) { row in
+                                elsewhere(row)
+                            }
                         }
                     }
                 }
@@ -311,6 +311,42 @@ struct ActionItemsTab: View {
         }
     }
 
+    /// Items this meeting revisited but that belong to the meeting that first raised them — so restating a task
+    /// week after week doesn't produce a new copy of it every time.
+    private var carriedOver: [(item: ActionItem, meeting: Meeting)] {
+        store.meetings(in: meeting.projectID)
+            .filter { $0.id != meeting.id }
+            .flatMap { m in m.openActionItems.filter { $0.lastDiscussedMeetingID == meeting.id }.map { (item: $0, meeting: m) } }
+            .sorted { $0.meeting.startedAt > $1.meeting.startedAt }
+    }
+
+    private func own(_ item: ActionItem) -> some View {
+        ActionItemRow(item: item, meeting: meeting) { updated in
+            var m = meeting
+            if let i = m.actionItems.firstIndex(where: { $0.id == item.id }) { m.actionItems[i] = updated }
+            store.update(m)
+        } delete: {
+            var m = meeting
+            m.actionItems.removeAll { $0.id == item.id }
+            store.update(m)
+        }
+    }
+
+    /// An item this meeting brought up again; edits go back to the meeting that owns it.
+    private func elsewhere(_ row: (item: ActionItem, meeting: Meeting)) -> some View {
+        let owner = row.meeting
+        let item = row.item
+        return ActionItemRow(item: item, meeting: owner, showMeeting: true) { updated in
+            var m = owner
+            if let i = m.actionItems.firstIndex(where: { $0.id == item.id }) { m.actionItems[i] = updated }
+            store.update(m)
+        } delete: {
+            var m = owner
+            m.actionItems.removeAll { $0.id == item.id }
+            store.update(m)
+        }
+    }
+
     private func add() {
         let t = newTask.trimmingCharacters(in: .whitespaces)
         guard !t.isEmpty else { return }
@@ -322,31 +358,47 @@ struct ActionItemsTab: View {
 }
 
 struct ActionItemRow: View {
+    @EnvironmentObject var store: Store
+    @EnvironmentObject var pipeline: Pipeline
     let item: ActionItem
     let meeting: Meeting
+    /// Show which meeting the item came from. On for lists that aren't already grouped by meeting.
+    var showMeeting = false
     let update: (ActionItem) -> Void
     let delete: () -> Void
     @State private var showingCalendar = false
+    @State private var expanded = false
+
+    private var advising: Bool { pipeline.isAdvising(item.id) }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            Toggle("", isOn: Binding(get: { item.done }, set: { var i = item; i.done = $0; update(i) }))
-                .toggleStyle(.checkbox).labelsHidden()
-            VStack(alignment: .leading, spacing: 2) {
-                Text(item.task).strikethrough(item.done).foregroundStyle(item.done ? .secondary : .primary)
-                HStack(spacing: 8) {
-                    if let owner = item.owner, !owner.isEmpty { Label(owner, systemImage: "person") }
-                    if item.dueLabel != nil || item.calendarAddedAt != nil {
-                        DueDateChip(item: item, meeting: meeting, update: update)
-                    }
-                    if item.isManual { Text("added by you").italic() }
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .top, spacing: 10) {
+                Toggle("", isOn: Binding(get: { item.done }, set: { var i = item; i.done = $0; update(i) }))
+                    .toggleStyle(.checkbox).labelsHidden()
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(item.task).strikethrough(item.done).foregroundStyle(item.done ? .secondary : .primary)
+                    caption
                 }
-                .font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                guidanceButton
             }
-            Spacer()
+            if expanded, let guidance = item.guidance { GuidancePanel(item: item, text: guidance, meeting: meeting) }
+            if let error = pipeline.adviceErrors[item.id] {
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                    Text(error).textSelection(.enabled)
+                    Spacer()
+                    Button("Dismiss") { pipeline.adviceErrors[item.id] = nil }.buttonStyle(.link)
+                }
+                .font(.caption)
+                .padding(.leading, 26)
+            }
         }
         .padding(.vertical, 2)
         .contextMenu {
+            Button(item.guidance == nil ? "Suggest How to Handle This" : "Suggest How to Handle This Again") { requestGuidance() }
+                .disabled(advising)
             Button("Add to Calendar…") { showingCalendar = true }
             Divider()
             Button("Delete", role: .destructive, action: delete)
@@ -359,6 +411,81 @@ struct ActionItemRow: View {
                 update(i)
             }
         }
+    }
+
+    private var caption: some View {
+        HStack(spacing: 8) {
+            if let owner = item.owner, !owner.isEmpty { Label(owner, systemImage: "person") }
+            if item.dueLabel != nil || item.calendarAddedAt != nil {
+                DueDateChip(item: item, meeting: meeting, update: update)
+            }
+            if showMeeting {
+                Label("\(meeting.title) · \(Fmt.dateOnly.string(from: meeting.startedAt))", systemImage: "text.bubble")
+                    .lineLimit(1)
+            }
+            if let revisited = item.lastDiscussedMeetingID, let last = store.meeting(revisited), last.id != meeting.id {
+                Text("· still open")
+                    .help("Came up again in “\(last.title)” on \(Fmt.dateOnly.string(from: last.startedAt))")
+            }
+            if item.isManual { Text("added by you").italic() }
+        }
+        .font(.caption).foregroundStyle(.secondary)
+    }
+
+    @ViewBuilder
+    private var guidanceButton: some View {
+        if advising {
+            ProgressView().controlSize(.small)
+                .help("Working out how to handle this…")
+        } else if item.guidance != nil {
+            Button { expanded.toggle() } label: {
+                Image(systemName: expanded ? "lightbulb.fill" : "lightbulb")
+            }
+            .buttonStyle(.borderless)
+            .help(expanded ? "Hide the suggestion" : "Show how to handle this")
+        } else {
+            Button(action: requestGuidance) { Image(systemName: "wand.and.stars") }
+                .buttonStyle(.borderless)
+                .foregroundStyle(.secondary)
+                .help("Suggest how to handle this — asks the model, using this meeting and the project context")
+        }
+    }
+
+    private func requestGuidance() {
+        expanded = true
+        pipeline.requestGuidance(for: item, in: meeting)
+    }
+}
+
+/// The model's answer to "how would you handle this", shown under the item that asked for it.
+struct GuidancePanel: View {
+    @EnvironmentObject var pipeline: Pipeline
+    let item: ActionItem
+    let text: String
+    let meeting: Meeting
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Label("Suggested approach", systemImage: "lightbulb")
+                    .font(.caption.weight(.semibold))
+                if let at = item.guidanceAt {
+                    Text(Fmt.dateOnly.string(from: at)).font(.caption).foregroundStyle(.tertiary)
+                }
+                Spacer()
+                Button("Regenerate") { pipeline.requestGuidance(for: item, in: meeting) }
+                    .disabled(pipeline.isAdvising(item.id))
+                Button("Copy") { Clipboard.copy(text) }
+            }
+            .buttonStyle(.link)
+            .font(.caption)
+            MarkdownView(markdown: text)
+                .textSelection(.enabled)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 8).fill(.quaternary.opacity(0.4)))
+        .padding(.leading, 26)
     }
 }
 

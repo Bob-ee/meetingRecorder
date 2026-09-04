@@ -66,11 +66,22 @@ public struct ActionItem: Identifiable, Codable, Hashable, Sendable {
     public var isManual: Bool
     /// When the user put this item in their calendar or reminders.
     public var calendarAddedAt: Date?
+    /// What was actually said when this was assigned, so advice doesn't have to guess from the task line alone.
+    public var sourceQuote: String?
+    /// "How would I handle this" — written by the model when the user asks for it, never automatically.
+    public var guidance: String?
+    public var guidanceAt: Date?
+    /// The last meeting that brought this up again. Set when a later meeting restates an item instead of
+    /// raising a duplicate; nil means it has only ever been discussed in the meeting it belongs to.
+    public var lastDiscussedMeetingID: UUID?
 
     public init(id: UUID = UUID(), task: String, owner: String? = nil, due: String? = nil, dueDate: EventDate? = nil,
-                done: Bool = false, isManual: Bool = false, calendarAddedAt: Date? = nil) {
+                done: Bool = false, isManual: Bool = false, calendarAddedAt: Date? = nil, sourceQuote: String? = nil,
+                guidance: String? = nil, guidanceAt: Date? = nil, lastDiscussedMeetingID: UUID? = nil) {
         self.id = id; self.task = task; self.owner = owner; self.due = due; self.dueDate = dueDate
         self.done = done; self.isManual = isManual; self.calendarAddedAt = calendarAddedAt
+        self.sourceQuote = sourceQuote; self.guidance = guidance; self.guidanceAt = guidanceAt
+        self.lastDiscussedMeetingID = lastDiscussedMeetingID
     }
 
     public init(from decoder: Decoder) throws {
@@ -83,6 +94,10 @@ public struct ActionItem: Identifiable, Codable, Hashable, Sendable {
         done = try c.decodeIfPresent(Bool.self, forKey: .done) ?? false
         isManual = try c.decodeIfPresent(Bool.self, forKey: .isManual) ?? false
         calendarAddedAt = try? c.decodeIfPresent(Date.self, forKey: .calendarAddedAt)
+        sourceQuote = try? c.decodeIfPresent(String.self, forKey: .sourceQuote)
+        guidance = try? c.decodeIfPresent(String.self, forKey: .guidance)
+        guidanceAt = try? c.decodeIfPresent(Date.self, forKey: .guidanceAt)
+        lastDiscussedMeetingID = try? c.decodeIfPresent(UUID.self, forKey: .lastDiscussedMeetingID)
     }
 
     /// The deadline for display: the resolved day when there is one, else the words that were used.
@@ -243,11 +258,22 @@ public struct MeetingSummary: Codable, Sendable {
         public var due: String?
         /// `YYYY-MM-DD` or `YYYY-MM-DDTHH:MM` in the summarizing machine's zone; see `LocalDate.parse`.
         public var dueDate: String?
+        /// The sentence from the transcript where this was assigned.
+        public var sourceQuote: String?
+        /// The `ref` of an item already open in the project that this restates ("P2"), or nil for a new task.
+        public var duplicateOf: String?
 
-        enum CodingKeys: String, CodingKey { case owner, task, due; case dueDate = "due_date" }
+        enum CodingKeys: String, CodingKey {
+            case owner, task, due
+            case dueDate = "due_date"
+            case sourceQuote = "source_quote"
+            case duplicateOf = "duplicate_of"
+        }
 
-        public init(owner: String? = nil, task: String, due: String? = nil, dueDate: String? = nil) {
+        public init(owner: String? = nil, task: String, due: String? = nil, dueDate: String? = nil,
+                    sourceQuote: String? = nil, duplicateOf: String? = nil) {
             self.owner = owner; self.task = task; self.due = due; self.dueDate = dueDate
+            self.sourceQuote = sourceQuote; self.duplicateOf = duplicateOf
         }
 
         public init(from decoder: Decoder) throws {
@@ -256,6 +282,24 @@ public struct MeetingSummary: Codable, Sendable {
             task = try c.decodeIfPresent(String.self, forKey: .task) ?? ""
             due = try? c.decodeIfPresent(String.self, forKey: .due)
             dueDate = try? c.decodeIfPresent(String.self, forKey: .dueDate)
+            sourceQuote = try? c.decodeIfPresent(String.self, forKey: .sourceQuote)
+            duplicateOf = try? c.decodeIfPresent(String.self, forKey: .duplicateOf)
+        }
+    }
+
+    /// An item that was already open elsewhere in the project and that this meeting says is finished.
+    public struct Completion: Codable, Sendable {
+        /// The `ref` the prompt used for it ("P2").
+        public var ref: String
+        /// What was said that shows it's done.
+        public var evidence: String?
+
+        public init(ref: String, evidence: String? = nil) { self.ref = ref; self.evidence = evidence }
+
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            ref = try c.decodeIfPresent(String.self, forKey: .ref) ?? ""
+            evidence = try? c.decodeIfPresent(String.self, forKey: .evidence)
         }
     }
 
@@ -291,17 +335,21 @@ public struct MeetingSummary: Codable, Sendable {
     public var actionItems: [Item]
     public var openQuestions: [String]
     public var events: [Event]
+    /// Items open elsewhere in the project that this meeting closed out.
+    public var completedItems: [Completion]
 
     enum CodingKeys: String, CodingKey {
         case title, summary, decisions, events
         case actionItems = "action_items"
         case openQuestions = "open_questions"
+        case completedItems = "completed_items"
     }
 
     public init(title: String? = nil, summary: String, decisions: [String] = [], actionItems: [Item] = [],
-                openQuestions: [String] = [], events: [Event] = []) {
+                openQuestions: [String] = [], events: [Event] = [], completedItems: [Completion] = []) {
         self.title = title; self.summary = summary; self.decisions = decisions
         self.actionItems = actionItems; self.openQuestions = openQuestions; self.events = events
+        self.completedItems = completedItems
     }
 
     public init(from decoder: Decoder) throws {
@@ -312,5 +360,47 @@ public struct MeetingSummary: Codable, Sendable {
         actionItems = (try? c.decodeIfPresent([Item].self, forKey: .actionItems)) ?? []
         openQuestions = (try? c.decodeIfPresent([String].self, forKey: .openQuestions)) ?? []
         events = (try? c.decodeIfPresent([Event].self, forKey: .events)) ?? []
+        completedItems = (try? c.decodeIfPresent([Completion].self, forKey: .completedItems)) ?? []
+    }
+}
+
+/// An action item still open somewhere else in the project, handed to the summarizer so it can carry the item
+/// forward or close it instead of raising a near-duplicate. `ref` is short-lived: it identifies the item inside
+/// one prompt and its reply, nothing more.
+public struct OpenProjectItem: Sendable {
+    public var ref: String
+    public var id: UUID
+    public var meetingID: UUID
+    public var task: String
+    public var owner: String?
+    public var dueLabel: String?
+    public var raisedAt: Date
+    public var meetingTitle: String
+
+    public init(ref: String, id: UUID, meetingID: UUID, task: String, owner: String? = nil, dueLabel: String? = nil,
+                raisedAt: Date, meetingTitle: String) {
+        self.ref = ref; self.id = id; self.meetingID = meetingID; self.task = task; self.owner = owner
+        self.dueLabel = dueLabel; self.raisedAt = raisedAt; self.meetingTitle = meetingTitle
+    }
+}
+
+/// What the model returns when asked to bring a project's learned context up to date.
+public struct ContextUpdate: Codable, Sendable {
+    /// False when the meeting taught it nothing durable — leave the file alone.
+    public var changed: Bool
+    /// The complete replacement text (Markdown), not a patch.
+    public var context: String
+    /// One line for the UI on what moved.
+    public var note: String?
+
+    public init(changed: Bool, context: String, note: String? = nil) {
+        self.changed = changed; self.context = context; self.note = note
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        changed = try c.decodeIfPresent(Bool.self, forKey: .changed) ?? false
+        context = try c.decodeIfPresent(String.self, forKey: .context) ?? ""
+        note = try? c.decodeIfPresent(String.self, forKey: .note)
     }
 }

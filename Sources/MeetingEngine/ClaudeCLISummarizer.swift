@@ -46,7 +46,7 @@ public struct ClaudeCLISummarizer: Summarizer {
         return found.isEmpty ? nil : found
     }
 
-    public func summarize(_ request: SummaryRequest) async throws -> MeetingSummary {
+    public func complete(_ request: CompletionRequest) async throws -> String {
         guard let exe = Self.locateClaude(override: claudePath) else { throw SummarizerError.claudeNotFound }
 
         var env = ProcessInfo.processInfo.environment
@@ -57,19 +57,19 @@ public struct ClaudeCLISummarizer: Summarizer {
         let extraPath = ["\(home)/.local/bin", "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"]
         env["PATH"] = (extraPath + [(env["PATH"] ?? "")]).joined(separator: ":")
 
-        let stdin = Prompts.user(request)
         let workingDirectory = request.debugDirectory ?? FileManager.default.temporaryDirectory
         // `--setting-sources ""` skips hooks/plugins/project settings but keeps the subscription login
         // (`--bare` would also drop the login, so don't use it). `--json-schema` makes the CLI enforce the
         // shape and hand back a parsed `structured_output`, so stray newlines inside strings can't break us.
         let base = ["-p", "--model", model, "--output-format", "json", "--no-session-persistence",
-                    "--system-prompt", Prompts.system]
-        var optional: [[String]] = [["--setting-sources", ""], ["--json-schema", Prompts.schema]]
+                    "--system-prompt", request.system]
+        var optional: [[String]] = [["--setting-sources", ""]]
+        if let schema = request.schema { optional.append(["--json-schema", schema]) }
         var result: ProcessResult
         while true {
-            let args = base + optional.flatMap { $0 } + [Prompts.instruction]
-            result = try await ProcessRunner.run(executable: exe, arguments: args, stdin: stdin, environment: env,
-                                                 currentDirectory: workingDirectory, timeout: 600)
+            let args = base + optional.flatMap { $0 } + [request.instruction]
+            result = try await ProcessRunner.run(executable: exe, arguments: args, stdin: request.user,
+                                                 environment: env, currentDirectory: workingDirectory, timeout: 600)
             // Older CLIs: drop whichever optional flag they don't know and try again.
             if result.exitCode != 0, result.stderr.lowercased().contains("unknown option"),
                let bad = optional.firstIndex(where: { result.stderr.contains($0[0]) }) {
@@ -88,55 +88,29 @@ public struct ClaudeCLISummarizer: Summarizer {
             }
             throw SummarizerError.failed(String(msg.suffix(600)))
         }
-        do {
-            return try Self.parse(result.stdout)
-        } catch {
-            // Keep the raw reply next to the meeting so a parse failure is debuggable (and nothing is lost).
-            if let dir = request.debugDirectory {
-                let raw = dir.appendingPathComponent("claude-raw.json")
-                try? result.stdout.write(to: raw, atomically: true, encoding: .utf8)
-                Log.summarizer.error("couldn't parse claude output; saved to \(raw.path)")
-            }
-            throw error
-        }
+        return try Self.unwrap(result.stdout)
     }
 
-    public static func parse(_ stdout: String) throws -> MeetingSummary {
+    /// Pull the model's reply out of the CLI's JSON envelope. A schema-checked reply comes back as
+    /// `structured_output`, which is handed on as JSON text; anything else is the plain `result` string.
+    public static func unwrap(_ stdout: String) throws -> String {
         let trimmed = stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-        var payload = trimmed
-        if let data = trimmed.data(using: .utf8),
-           let envelope = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            if envelope["is_error"] as? Bool == true {
-                let text = (envelope["result"] as? String) ?? (envelope["subtype"] as? String) ?? "unknown error"
-                if text.localizedCaseInsensitiveContains("not logged in") {
-                    throw SummarizerError.notConfigured("claude isn't logged in on this machine. Paste a token from `claude setup-token` into the summarizer settings.")
-                }
-                throw SummarizerError.failed(text)
+        guard let data = trimmed.data(using: .utf8),
+              let envelope = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return trimmed
+        }
+        if envelope["is_error"] as? Bool == true {
+            let text = (envelope["result"] as? String) ?? (envelope["subtype"] as? String) ?? "unknown error"
+            if text.localizedCaseInsensitiveContains("not logged in") {
+                throw SummarizerError.notConfigured("claude isn't logged in on this machine. Paste a token from `claude setup-token` into the summarizer settings.")
             }
-            // Preferred: the CLI already validated this against our schema.
-            if let structured = envelope["structured_output"] as? [String: Any],
-               let structuredData = try? JSONSerialization.data(withJSONObject: structured),
-               let summary = try? JSONDecoder().decode(MeetingSummary.self, from: structuredData) {
-                return summary
-            }
-            payload = (envelope["result"] as? String) ?? ""
+            throw SummarizerError.failed(text)
         }
-        return try LLMOutput.parseSummary(payload)
-    }
-}
-
-public enum LLMOutput {
-    /// Parse a model's free-text reply into a summary, tolerating code fences, surrounding prose,
-    /// raw newlines inside strings and trailing commas.
-    public static func parseSummary(_ text: String) throws -> MeetingSummary {
-        let repaired = JSONRepair.repair(text)
-        guard let data = repaired.data(using: .utf8), repaired.hasPrefix("{") else {
-            throw SummarizerError.badOutput(String(text.prefix(400)))
+        // Preferred: the CLI already validated this against our schema.
+        if let structured = envelope["structured_output"],
+           let structuredData = try? JSONSerialization.data(withJSONObject: structured) {
+            return String(decoding: structuredData, as: UTF8.self)
         }
-        do {
-            return try JSONDecoder().decode(MeetingSummary.self, from: data)
-        } catch {
-            throw SummarizerError.badOutput("\(error.localizedDescription) — \(String(text.prefix(300)))")
-        }
+        return (envelope["result"] as? String) ?? trimmed
     }
 }

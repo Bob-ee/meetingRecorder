@@ -60,6 +60,7 @@ struct ExportMirror {
             try fm.createDirectory(at: dir, withIntermediateDirectories: true)
             try jsonEncoder.encode(project.dto).write(to: dir.appendingPathComponent("project.json"), options: .atomic)
             try project.context.write(to: dir.appendingPathComponent("CONTEXT.md"), atomically: true, encoding: .utf8)
+            try project.learnedContext.write(to: dir.appendingPathComponent("LEARNED.md"), atomically: true, encoding: .utf8)
         } catch {
             Log.hub.error("export mirror (project \(project.name)): \(error.localizedDescription)")
         }

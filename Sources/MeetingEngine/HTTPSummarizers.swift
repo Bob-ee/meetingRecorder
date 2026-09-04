@@ -40,20 +40,24 @@ public struct AnthropicSummarizer: Summarizer {
 
     public var displayName: String { "Anthropic API · \(model)" }
 
-    public func summarize(_ request: SummaryRequest) async throws -> MeetingSummary {
+    public func complete(_ request: CompletionRequest) async throws -> String {
         guard !apiKey.isEmpty else { throw SummarizerError.notConfigured("add an Anthropic API key") }
-        let body: [String: Any] = [
+        var body: [String: Any] = [
             "model": model,
-            "max_tokens": 8192,
-            "system": Prompts.system,
-            "messages": [["role": "user", "content": Prompts.user(request)]],
-            "tools": [[
-                "name": "meeting_summary",
-                "description": "Record the notes for this meeting.",
-                "input_schema": Prompts.schemaObject,
-            ]],
-            "tool_choice": ["type": "tool", "name": "meeting_summary"],
+            "max_tokens": request.maxTokens,
+            "system": request.system,
+            "messages": [["role": "user", "content": request.user]],
         ]
+        // A forced tool call is how this API validates a reply against a schema.
+        if let schema = request.schema,
+           let object = try? JSONSerialization.jsonObject(with: Data(schema.utf8)) as? [String: Any] {
+            body["tools"] = [[
+                "name": request.label,
+                "description": "Record the \(request.label).",
+                "input_schema": object,
+            ]]
+            body["tool_choice"] = ["type": "tool", "name": request.label]
+        }
         let (status, data) = try await HTTP.post(baseURL.appendingPathComponent("v1/messages"),
                                                  headers: ["x-api-key": apiKey, "anthropic-version": "2023-06-01"],
                                                  json: body)
@@ -66,12 +70,10 @@ public struct AnthropicSummarizer: Summarizer {
             throw SummarizerError.badOutput(String(String(data: data, encoding: .utf8)?.prefix(300) ?? ""))
         }
         if let tool = content.first(where: { $0["type"] as? String == "tool_use" }), let input = tool["input"],
-           let inputData = try? JSONSerialization.data(withJSONObject: input),
-           let summary = try? JSONDecoder().decode(MeetingSummary.self, from: inputData) {
-            return summary
+           let inputData = try? JSONSerialization.data(withJSONObject: input) {
+            return String(decoding: inputData, as: UTF8.self)
         }
-        let text = content.compactMap { $0["text"] as? String }.joined()
-        return try LLMOutput.parseSummary(text)
+        return content.compactMap { $0["text"] as? String }.joined()
     }
 }
 
@@ -87,7 +89,7 @@ public struct OpenAICompatibleSummarizer: Summarizer {
 
     public var displayName: String { "\(baseURL.host ?? "OpenAI-compatible") · \(model)" }
 
-    public func summarize(_ request: SummaryRequest) async throws -> MeetingSummary {
+    public func complete(_ request: CompletionRequest) async throws -> String {
         var base = baseURL.absoluteString
         while base.hasSuffix("/") { base.removeLast() }
         guard let url = URL(string: base + "/chat/completions") else {
@@ -98,12 +100,13 @@ public struct OpenAICompatibleSummarizer: Summarizer {
         var body: [String: Any] = [
             "model": model,
             "temperature": 0.2,
+            "max_tokens": request.maxTokens,
             "messages": [
-                ["role": "system", "content": Prompts.system],
-                ["role": "user", "content": Prompts.user(request)],
+                ["role": "system", "content": request.system],
+                ["role": "user", "content": request.user],
             ],
-            "response_format": ["type": "json_object"],
         ]
+        if request.schema != nil { body["response_format"] = ["type": "json_object"] }
         var (status, data) = try await HTTP.post(url, headers: headers, json: body)
         if status == 400, HTTP.errorText(data).lowercased().contains("response_format") {
             body.removeValue(forKey: "response_format")   // server doesn't support JSON mode; rely on the prompt
@@ -120,7 +123,7 @@ public struct OpenAICompatibleSummarizer: Summarizer {
               let text = message["content"] as? String else {
             throw SummarizerError.badOutput(String(String(data: data, encoding: .utf8)?.prefix(300) ?? ""))
         }
-        return try LLMOutput.parseSummary(text)
+        return text
     }
 }
 

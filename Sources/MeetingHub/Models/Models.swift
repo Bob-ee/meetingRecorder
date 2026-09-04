@@ -61,12 +61,19 @@ final class ProjectModel: Model, @unchecked Sendable {
     @Parent(key: "workspace_id") var workspace: WorkspaceModel
     @Field(key: "name") var name: String
     @Field(key: "context") var context: String
+    /// What the summarizer has worked out about this project by itself. Null until it writes one.
+    @OptionalField(key: "learned_context") var learnedContextRaw: String?
     @Timestamp(key: "created_at", on: .create) var createdAt: Date?
     @Timestamp(key: "updated_at", on: .update) var updatedAt: Date?
     @Children(for: \.$project) var meetings: [MeetingModel]
     init() {}
     init(id: UUID? = nil, workspaceID: UUID, name: String, context: String = "") {
         self.id = id; self.$workspace.id = workspaceID; self.name = name; self.context = context
+    }
+
+    var learnedContext: String {
+        get { learnedContextRaw ?? "" }
+        set { learnedContextRaw = newValue.isEmpty ? nil : newValue }
     }
 
     var dto: Project { Project(id: id ?? UUID(), name: name, createdAt: createdAt ?? Date(), updatedAt: updatedAt ?? createdAt) }
@@ -133,12 +140,17 @@ final class ActionItemModel: Model, @unchecked Sendable {
     @Field(key: "is_manual") var isManual: Bool
     @Field(key: "position") var position: Int
     @OptionalField(key: "calendar_added_at") var calendarAddedAt: Date?
+    @OptionalField(key: "source_quote") var sourceQuote: String?
+    @OptionalField(key: "guidance") var guidance: String?
+    @OptionalField(key: "guidance_at") var guidanceAt: Date?
+    @OptionalField(key: "last_discussed_meeting_id") var lastDiscussedMeetingID: UUID?
     @Timestamp(key: "updated_at", on: .update) var updatedAt: Date?
     init() {}
     init(_ item: ActionItem, meetingID: UUID, position: Int) {
         id = item.id; $meeting.id = meetingID; task = item.task; owner = item.owner; due = item.due
         dueDate = item.dueDate; done = item.done; isManual = item.isManual; self.position = position
-        calendarAddedAt = item.calendarAddedAt
+        calendarAddedAt = item.calendarAddedAt; sourceQuote = item.sourceQuote; guidance = item.guidance
+        guidanceAt = item.guidanceAt; lastDiscussedMeetingID = item.lastDiscussedMeetingID
     }
 
     var dueDate: EventDate? {
@@ -148,7 +160,8 @@ final class ActionItemModel: Model, @unchecked Sendable {
 
     var dto: ActionItem {
         ActionItem(id: id ?? UUID(), task: task, owner: owner, due: due, dueDate: dueDate, done: done, isManual: isManual,
-                   calendarAddedAt: calendarAddedAt)
+                   calendarAddedAt: calendarAddedAt, sourceQuote: sourceQuote, guidance: guidance,
+                   guidanceAt: guidanceAt, lastDiscussedMeetingID: lastDiscussedMeetingID)
     }
 }
 

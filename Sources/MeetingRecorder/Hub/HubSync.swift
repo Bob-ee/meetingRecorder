@@ -293,6 +293,22 @@ final class HubSync: ObservableObject {
     }
 
     /// Compress raw tracks and return what should be uploaded.
+    /// Have the hub re-derive a project's learned note, and bring the result down to this Mac.
+    func refreshProjectContext(_ projectID: UUID) async throws {
+        guard let client else { throw HubClientError.notPaired }
+        let detail = try await client.refreshProjectContext(projectID)
+        applyingRemote = true
+        store.setLearnedContext(projectID, detail.learnedContext, note: "Rewritten on the hub.")
+        applyingRemote = false
+    }
+
+    /// Have the hub write "how would you handle this" for one action item. It keeps a copy; the text comes back
+    /// here so the local store — which is what the UI reads — has it too.
+    func advise(item: UUID, in meetingID: UUID) async throws -> String {
+        guard let client else { throw HubClientError.notPaired }
+        return try await client.advise(meeting: meetingID, item: item).guidance
+    }
+
     private func prepareTracks(_ meeting: Meeting) async -> [(AudioTrackKind, URL)] {
         var result: [(AudioTrackKind, URL)] = []
         let folder = store.folder(for: meeting)
@@ -406,14 +422,20 @@ final class HubSync: ObservableObject {
                     store.adoptProjectID(local.id, newID: rp.project.id)
                     dirtyProjects.remove(local.id)
                     if store.projectContext(rp.project.id).isEmpty, !rp.context.isEmpty { store.setProjectContext(rp.project.id, rp.context) }
+                    if store.learnedContext(rp.project.id).isEmpty, !rp.learnedContext.isEmpty {
+                        store.setLearnedContext(rp.project.id, rp.learnedContext)
+                    }
                 } else {
                     store.createProject(id: rp.project.id, name: rp.project.name)
                     if !rp.context.isEmpty { store.setProjectContext(rp.project.id, rp.context) }
+                    if !rp.learnedContext.isEmpty { store.setLearnedContext(rp.project.id, rp.learnedContext) }
                 }
             }
             applyingRemote = false
             for p in store.projects where !remoteIDs.contains(p.id) {
-                _ = try await client.createProject(CreateProjectRequest(id: p.id, name: p.name, context: store.projectContext(p.id)))
+                _ = try await client.createProject(CreateProjectRequest(id: p.id, name: p.name,
+                                                                       context: store.projectContext(p.id),
+                                                                       learnedContext: store.learnedContext(p.id)))
             }
         } catch {
             applyingRemote = false
@@ -438,6 +460,13 @@ final class HubSync: ObservableObject {
                 }
                 store.createProject(id: rp.project.id, name: rp.project.name)
                 if !rp.context.isEmpty { store.setProjectContext(rp.project.id, rp.context) }
+                if !rp.learnedContext.isEmpty { store.setLearnedContext(rp.project.id, rp.learnedContext) }
+            }
+            // In hub mode the hub does the summarizing, so it owns the learned note — take its copy.
+            for rp in remoteProjects where store.project(rp.project.id) != nil {
+                if rp.learnedContext != store.learnedContext(rp.project.id) {
+                    store.setLearnedContext(rp.project.id, rp.learnedContext, note: "Updated on the hub.")
+                }
             }
             applyingRemote = false
 
@@ -493,7 +522,11 @@ final class HubSync: ObservableObject {
         for id in dirtyProjects {
             guard let p = store.project(id) else { dirtyProjects.remove(id); continue }
             do {
-                _ = try await client.createProject(CreateProjectRequest(id: p.id, name: p.name, context: store.projectContext(p.id)))
+                // The learned note only goes up when the project is new to the hub — after that the hub owns it,
+                // and pushing this Mac's copy back would undo whatever it last wrote.
+                _ = try await client.createProject(CreateProjectRequest(id: p.id, name: p.name,
+                                                                       context: store.projectContext(p.id),
+                                                                       learnedContext: store.learnedContext(p.id)))
                 _ = try await client.patchProject(p.id, PatchProjectRequest(name: p.name, context: store.projectContext(p.id)))
                 dirtyProjects.remove(id)
             } catch { Log.hub.error("project push failed: \(error.localizedDescription)"); markOffline(error); return }

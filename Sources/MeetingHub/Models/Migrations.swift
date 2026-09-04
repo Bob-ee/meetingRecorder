@@ -145,3 +145,26 @@ struct AddCalendarFieldsV2: AsyncMigration {
         try await db.schema(ActionItemModel.schema).deleteField("due_date").deleteField("calendar_added_at").update()
     }
 }
+
+/// The project note the summarizer keeps for itself, and the extra columns action items grew with it: where the
+/// item came from in the transcript, the advice written for it on request, and the last meeting to bring it up.
+struct AddProjectContextFieldsV3: AsyncMigration {
+    func prepare(on db: Database) async throws {
+        try await db.schema(ProjectModel.schema)
+            .field("learned_context", .string)
+            .update()
+        try await db.schema(ActionItemModel.schema)
+            .field("source_quote", .string)
+            .field("guidance", .string)
+            .field("guidance_at", .datetime)
+            .field("last_discussed_meeting_id", .uuid)
+            .update()
+    }
+
+    func revert(on db: Database) async throws {
+        try await db.schema(ProjectModel.schema).deleteField("learned_context").update()
+        try await db.schema(ActionItemModel.schema)
+            .deleteField("source_quote").deleteField("guidance").deleteField("guidance_at")
+            .deleteField("last_discussed_meeting_id").update()
+    }
+}

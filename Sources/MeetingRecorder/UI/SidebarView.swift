@@ -90,29 +90,98 @@ struct SidebarView: View {
     }
 }
 
+/// Two notes sit behind every summary: the one the user writes, and the one the summarizer keeps for itself.
+/// They're separate files on purpose — the model rewrites its own after each meeting and never touches the user's.
 struct ProjectContextEditor: View {
     @EnvironmentObject var store: Store
+    @EnvironmentObject var pipeline: Pipeline
     @Environment(\.dismiss) private var dismiss
     let project: Project
+    @State private var pane: Pane = .yours
     @State private var text = ""
+    @State private var learned = ""
+
+    enum Pane: String, CaseIterable, Identifiable {
+        case yours = "Yours", learned = "Written by Claude"
+        var id: String { rawValue }
+    }
+
+    private var refreshing: Bool { pipeline.updatingContext.contains(project.id) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Project context — \(project.name)").font(.headline)
-            Text("Who's who, jargon, goals, what matters. Claude reads this before summarizing every meeting in this project, like Claude project instructions.")
-                .font(.callout).foregroundStyle(.secondary)
-            TextEditor(text: $text)
-                .font(.body.monospaced())
-                .frame(minHeight: 260)
+            Picker("", selection: $pane) {
+                ForEach(Pane.allCases) { Text($0.rawValue).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+
+            switch pane {
+            case .yours:
+                Text("Who's who, jargon, goals, what matters. Claude reads this before summarizing every meeting in this project, like Claude project instructions. It wins wherever it disagrees with the note on the other tab.")
+                    .font(.callout).foregroundStyle(.secondary)
+                TextEditor(text: $text)
+                    .font(.body.monospaced())
+                    .frame(minHeight: 240)
+            case .learned:
+                Text("What Claude has worked out about this project from the meetings themselves. It rewrites this after each one, keeping only what's still true. Edit it freely — your version is what the next summary reads.")
+                    .font(.callout).foregroundStyle(.secondary)
+                TextEditor(text: $learned)
+                    .font(.body.monospaced())
+                    .frame(minHeight: 240)
+                    .overlay {
+                        if refreshing {
+                            ProgressView("Rewriting from the latest meeting…")
+                                .padding(12)
+                                .background(RoundedRectangle(cornerRadius: 8).fill(.background.opacity(0.9)))
+                        }
+                    }
+                HStack(spacing: 12) {
+                    if let note = store.learnedContextNote(project.id) {
+                        Text(note).lineLimit(2).foregroundStyle(.secondary)
+                    } else if learned.isEmpty {
+                        Text("Nothing yet — it gets written after the next meeting is summarized.").foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("Revert") {
+                        store.revertLearnedContext(project.id)
+                        learned = store.learnedContext(project.id)
+                    }
+                    .disabled(store.previousLearnedContext(project.id) == nil)
+                    .help("Put the previous version back")
+                    Button("Rewrite Now") { pipeline.refreshProjectContext(project.id) }
+                        .disabled(refreshing)
+                        .help("Re-derive this note from the project's most recent summarized meeting")
+                }
+                .font(.caption)
+                .buttonStyle(.link)
+            }
+
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }
-                Button("Save") { store.setProjectContext(project.id, text); dismiss() }
+                Button("Save") { save() }
                     .keyboardShortcut(.defaultAction)
             }
         }
         .padding()
-        .frame(width: 560, height: 420)
-        .onAppear { text = store.projectContext(project.id) }
+        .frame(width: 620, height: 520)
+        .onAppear {
+            text = store.projectContext(project.id)
+            learned = store.learnedContext(project.id)
+        }
+        // A rewrite finishing while the sheet is open should show up in it.
+        .onChange(of: refreshing) { _, running in
+            if !running { learned = store.learnedContext(project.id) }
+        }
+    }
+
+    private func save() {
+        if text != store.projectContext(project.id) { store.setProjectContext(project.id, text) }
+        if learned != store.learnedContext(project.id) {
+            store.setLearnedContext(project.id, learned, note: "Edited by you.")
+        }
+        dismiss()
     }
 }

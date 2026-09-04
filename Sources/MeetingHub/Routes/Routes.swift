@@ -1,6 +1,7 @@
 import Fluent
 import Foundation
 import MeetingCore
+import MeetingEngine
 import Vapor
 
 // Wire types come from MeetingCore; this is what lets Vapor encode/decode them.
@@ -19,6 +20,7 @@ extension MeetingDetail: Content {}
 extension AudioTrackInfo: Content {}
 extension NewActionItemRequest: Content {}
 extension PatchActionItemRequest: Content {}
+extension AdviceResponse: Content {}
 extension JobInfo: Content {}
 extension ProcessRequest: Content {}
 extension HubSettings: Content {}
@@ -103,6 +105,18 @@ enum HubQueries {
         return id
     }
 
+    /// The project's still-open action items, numbered for a prompt and leaving out one meeting's own, plus a
+    /// lookup of every item in the project so carry-forward can edit the ones a later meeting changed.
+    static func projectItems(db: Database, projectID: UUID, excluding meetingID: UUID)
+        async throws -> (open: [OpenProjectItem], byID: [UUID: ActionItem]) {
+        let siblings = try await MeetingModel.query(on: db).filter(\.$project.$id == projectID)
+            .with(\.$actionItems).sort(\.$startedAt, .descending).all()
+        let dtos = siblings.map { $0.dto() }
+        var byID: [UUID: ActionItem] = [:]
+        for m in dtos { for item in m.actionItems { byID[item.id] = item } }
+        return (ActionItems.openProjectItems(in: dtos, excluding: meetingID), byID)
+    }
+
     static func broadcastMeeting(_ req: Request, _ meeting: MeetingModel) {
         req.application.eventBus.post(HubEvent(kind: .meetingUpdated, meetingID: meeting.id, projectID: meeting.$project.id))
         let runner = req.application.jobRunner
@@ -125,7 +139,8 @@ func projectRoutes(_ r: RoutesBuilder) {
         let projects = try await ProjectModel.query(on: req.db).filter(\.$workspace.$id == p.workspaceID).with(\.$meetings).all()
         return projects
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-            .map { ProjectDetail(project: $0.dto, context: $0.context, meetingCount: $0.meetings.count) }
+            .map { ProjectDetail(project: $0.dto, context: $0.context, learnedContext: $0.learnedContext,
+                                 meetingCount: $0.meetings.count) }
     }
 
     r.post("projects") { req -> ProjectDetail in
@@ -134,19 +149,23 @@ func projectRoutes(_ r: RoutesBuilder) {
         let name = body.name.trimmingCharacters(in: .whitespaces)
         guard !name.isEmpty else { throw Abort(.badRequest, reason: "project name is empty") }
         if let id = body.id, let existing = try await ProjectModel.query(on: req.db).filter(\.$id == id).filter(\.$workspace.$id == p.workspaceID).first() {
-            return ProjectDetail(project: existing.dto, context: existing.context, meetingCount: 0)
+            return ProjectDetail(project: existing.dto, context: existing.context,
+                                 learnedContext: existing.learnedContext, meetingCount: 0)
         }
         let project = ProjectModel(id: body.id, workspaceID: p.workspaceID, name: name, context: body.context ?? "")
+        project.learnedContext = body.learnedContext ?? ""
         try await project.save(on: req.db)
         ExportMirror(root: req.application.hubPaths.export).writeProject(workspace: p.workspace.name, project: project)
         req.application.eventBus.post(HubEvent(kind: .projectUpdated, projectID: project.id))
-        return ProjectDetail(project: project.dto, context: project.context, meetingCount: 0)
+        return ProjectDetail(project: project.dto, context: project.context,
+                             learnedContext: project.learnedContext, meetingCount: 0)
     }
 
     r.get("projects", ":id") { req -> ProjectDetail in
         let project = try await HubQueries.project(req, id: HubQueries.uuid(req, "id"))
         let count = try await MeetingModel.query(on: req.db).filter(\.$project.$id == project.id!).count()
-        return ProjectDetail(project: project.dto, context: project.context, meetingCount: count)
+        return ProjectDetail(project: project.dto, context: project.context,
+                             learnedContext: project.learnedContext, meetingCount: count)
     }
 
     r.patch("projects", ":id") { req -> ProjectDetail in
@@ -156,6 +175,7 @@ func projectRoutes(_ r: RoutesBuilder) {
         let oldName = project.name
         if let name = body.name?.trimmingCharacters(in: .whitespaces), !name.isEmpty { project.name = name }
         if let context = body.context { project.context = context }
+        if let learned = body.learnedContext { project.learnedContext = learned }
         try await project.save(on: req.db)
         let mirror = ExportMirror(root: req.application.hubPaths.export)
         if oldName != project.name {
@@ -168,7 +188,43 @@ func projectRoutes(_ r: RoutesBuilder) {
         mirror.writeProject(workspace: p.workspace.name, project: project)
         req.application.eventBus.post(HubEvent(kind: .projectUpdated, projectID: project.id))
         let count = try await MeetingModel.query(on: req.db).filter(\.$project.$id == project.id!).count()
-        return ProjectDetail(project: project.dto, context: project.context, meetingCount: count)
+        return ProjectDetail(project: project.dto, context: project.context,
+                             learnedContext: project.learnedContext, meetingCount: count)
+    }
+
+    // Re-derive the learned note from the project's most recent summarized meeting, on request.
+    r.post("projects", ":id", "context", "refresh") { req -> ProjectDetail in
+        let pr = try req.principal
+        let project = try await HubQueries.project(req, id: HubQueries.uuid(req, "id"))
+        let settings = try await SettingsStore.load(workspaceID: pr.workspaceID, db: req.db, secrets: req.application.secrets)
+        let summarizer = try SummarizerFactory.make(settings.summarizer)
+        let meetings = try await MeetingModel.query(on: req.db).filter(\.$project.$id == project.id!)
+            .with(\.$actionItems).sort(\.$startedAt, .descending).all()
+        var source: (Meeting, String)?
+        for m in meetings {
+            if let summary = try await SummaryModel.query(on: req.db).filter(\.$meeting.$id == m.id!).first() {
+                source = (m.dto(), summary.markdown)
+                break
+            }
+        }
+        guard let (meeting, markdown) = source else {
+            throw Abort(.badRequest, reason: "no summarized meeting in this project to work from yet")
+        }
+        let update = try await summarizer.updateContext(ContextUpdateRequest(
+            projectName: project.name, userContext: project.context, learnedContext: project.learnedContext,
+            meeting: meeting, summaryMarkdown: markdown))
+        if let update {
+            let text = update.context.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !text.isEmpty, text != project.learnedContext {
+                project.learnedContext = text
+                try await project.save(on: req.db)
+                ExportMirror(root: req.application.hubPaths.export).writeProject(workspace: pr.workspace.name, project: project)
+                req.application.eventBus.post(HubEvent(kind: .projectUpdated, projectID: project.id))
+            }
+        }
+        let count = try await MeetingModel.query(on: req.db).filter(\.$project.$id == project.id!).count()
+        return ProjectDetail(project: project.dto, context: project.context,
+                             learnedContext: project.learnedContext, meetingCount: count)
     }
 
     r.delete("projects", ":id") { req -> HTTPStatus in
@@ -428,6 +484,33 @@ func actionItemRoutes(_ r: RoutesBuilder) {
         let fresh = try await HubQueries.meeting(req, id: meeting.id!)
         HubQueries.broadcastMeeting(req, fresh)
         return fresh.dto()
+    }
+
+    // Advice is never generated as part of processing — it costs a model call and only happens when asked for.
+    r.post("meetings", ":id", "action-items", ":item", "advise") { req -> AdviceResponse in
+        let pr = try req.principal
+        let meeting = try await HubQueries.meeting(req, id: HubQueries.uuid(req, "id"))
+        let itemID = try HubQueries.uuid(req, "item")
+        guard let row = meeting.actionItems.first(where: { $0.id == itemID }) else { throw Abort(.notFound, reason: "no such action item") }
+        let settings = try await SettingsStore.load(workspaceID: pr.workspaceID, db: req.db, secrets: req.application.secrets)
+        let userName = (try? await UserModel.find(pr.userID, on: req.db))?.name ?? settings.userName
+        let summarizer = try SummarizerFactory.make(settings.summarizer)
+        try await meeting.$project.load(on: req.db)
+        let project = meeting.project
+        let summary = try await SummaryModel.query(on: req.db).filter(\.$meeting.$id == meeting.id!).first()
+        let siblings = try await HubQueries.projectItems(db: req.db, projectID: project.id!, excluding: meeting.id!).open
+        let text = try await summarizer.advise(AdviceRequest(
+            item: row.dto, meeting: meeting.dto(), projectName: project.name, userContext: project.context,
+            learnedContext: project.learnedContext,
+            summaryMarkdown: summary?.markdown ?? "(no summary was written for this meeting)",
+            otherOpenItems: siblings, userName: userName))
+        row.guidance = text
+        row.guidanceAt = Date()
+        try await row.save(on: req.db)
+        try await meeting.save(on: req.db)
+        let fresh = try await HubQueries.meeting(req, id: meeting.id!)
+        HubQueries.broadcastMeeting(req, fresh)
+        return AdviceResponse(itemID: itemID, guidance: text, generatedAt: row.guidanceAt ?? Date())
     }
 
     r.delete("meetings", ":id", "action-items", ":item") { req -> Meeting in

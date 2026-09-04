@@ -158,9 +158,11 @@ actor JobRunner {
         let project = meeting.project
         let segments = transcript.segments
         var snapshot = meeting.dto()
+        let siblings = try await HubQueries.projectItems(db: db, projectID: project.id!, excluding: meetingID)
         let request = SummaryRequest(
             transcriptMarkdown: MeetingDocuments.transcriptMarkdown(segments, meeting: snapshot),
             projectName: project.name, projectContext: project.context,
+            learnedContext: project.learnedContext, openProjectItems: siblings.open,
             meeting: snapshot, userName: userName,
             debugDirectory: app.hubPaths.audioDir(workspace: job.$workspace.id, meeting: meetingID))
         let summary = try await summarizer.summarize(request)
@@ -170,7 +172,11 @@ actor JobRunner {
             snapshot.title = title
         }
         // Dates in the reply are read in this machine's zone — the same one the prompt described the meeting in.
-        let freshItems = summary.resolvedActionItems(for: snapshot)
+        // Anything this meeting restated or finished belongs to the meeting that raised it, not to this one.
+        let carried = ActionItems.carryForward(
+            pairs: summary.resolvedActionItemPairs(for: snapshot), completed: summary.completedItems,
+            openItems: siblings.open, itemsByID: siblings.byID, meetingID: meetingID)
+        let freshItems = carried.items
         let freshEvents = summary.resolvedEvents(for: snapshot)
         let markdown = Prompts.renderSummary(summary, meeting: snapshot, projectName: project.name, actionItems: freshItems, events: freshEvents)
         if let existing = try await SummaryModel.query(on: db).filter(\.$meeting.$id == meetingID).first() {
@@ -184,11 +190,62 @@ actor JobRunner {
         for (i, item) in merged.enumerated() {
             try await ActionItemModel(item, meetingID: meetingID, position: i).save(on: db)
         }
+        try await applyCarried(carried.edits, on: db)
         meeting.events = MeetingEvents.merge(existing: meeting.events, fresh: freshEvents)
         meeting.meetingStatus = .ready
         meeting.errorMessage = nil
         try await meeting.save(on: db)
+        await progress(job, meeting, "Updating project context…")
+        await updateContext(project: project, meeting: snapshot, summaryMarkdown: markdown,
+                            summarizer: summarizer, db: db)
         await progress(job, meeting, nil)
+    }
+
+    /// Write back items that this meeting changed in the meetings they were raised in, and let those meetings'
+    /// watchers know.
+    private func applyCarried(_ edits: [ActionItems.CarriedItem], on db: Database) async throws {
+        guard !edits.isEmpty else { return }
+        var touched: Set<UUID> = []
+        for edit in edits {
+            guard let row = try await ActionItemModel.find(edit.item.id, on: db) else { continue }
+            row.done = edit.item.done
+            row.owner = edit.item.owner
+            row.due = edit.item.due
+            row.dueDate = edit.item.dueDate
+            row.calendarAddedAt = edit.item.calendarAddedAt
+            row.sourceQuote = edit.item.sourceQuote
+            row.lastDiscussedMeetingID = edit.item.lastDiscussedMeetingID
+            try await row.save(on: db)
+            touched.insert(edit.meetingID)
+        }
+        for id in touched {
+            guard let m = try await MeetingModel.query(on: db).filter(\.$id == id).with(\.$actionItems).with(\.$project).first() else { continue }
+            try await m.save(on: db)
+            app.eventBus.post(HubEvent(kind: .meetingUpdated, meetingID: id, projectID: m.$project.id))
+            await mirror(m)
+        }
+    }
+
+    /// Keep the project's learned note current. Non-fatal by design: the meeting is already summarized, and a
+    /// stale note is a much smaller problem than a failed job.
+    private func updateContext(project: ProjectModel, meeting: Meeting, summaryMarkdown: String,
+                               summarizer: any Summarizer, db: Database) async {
+        do {
+            let update = try await summarizer.updateContext(ContextUpdateRequest(
+                projectName: project.name, userContext: project.context, learnedContext: project.learnedContext,
+                meeting: meeting, summaryMarkdown: summaryMarkdown))
+            guard let update else { return }
+            let text = update.context.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty, text != project.learnedContext else { return }
+            project.learnedContext = text
+            try await project.save(on: db)
+            try await project.$workspace.load(on: db)
+            ExportMirror(root: app.hubPaths.export).writeProject(workspace: project.workspace.name, project: project)
+            app.eventBus.post(HubEvent(kind: .projectUpdated, projectID: project.id))
+            Log.hub.info("project context updated after “\(meeting.title)”")
+        } catch {
+            Log.hub.warning("project context update failed: \(error.localizedDescription)")
+        }
     }
 
     /// Refresh the plain-files copy of a meeting.

@@ -91,6 +91,9 @@ struct HubClient: Sendable {
     func createProject(_ r: CreateProjectRequest) async throws -> ProjectDetail { try await send("POST", "projects", body: r) }
     func patchProject(_ id: UUID, _ r: PatchProjectRequest) async throws -> ProjectDetail { try await send("PATCH", "projects/\(id.uuidString)", body: r) }
     func deleteProject(_ id: UUID) async throws { try await sendNoContent("DELETE", "projects/\(id.uuidString)") }
+    func refreshProjectContext(_ id: UUID) async throws -> ProjectDetail {
+        try await send("POST", "projects/\(id.uuidString)/context/refresh")
+    }
 
     func meetings(project: UUID? = nil, since: Date? = nil) async throws -> [Meeting] {
         var q: [String: String] = [:]
@@ -103,6 +106,9 @@ struct HubClient: Sendable {
     func patchMeeting(_ id: UUID, _ r: PatchMeetingRequest) async throws -> Meeting { try await send("PATCH", "meetings/\(id.uuidString)", body: r) }
     func deleteMeeting(_ id: UUID) async throws { try await sendNoContent("DELETE", "meetings/\(id.uuidString)") }
     func replaceActionItems(_ id: UUID, _ items: [ActionItem]) async throws -> Meeting { try await send("PUT", "meetings/\(id.uuidString)/action-items", body: items) }
+    func advise(meeting: UUID, item: UUID) async throws -> AdviceResponse {
+        try await send("POST", "meetings/\(meeting.uuidString)/action-items/\(item.uuidString)/advise")
+    }
     func pushTranscript(_ id: UUID, _ segments: [TranscriptSegment]) async throws -> MeetingDetail { try await send("PUT", "meetings/\(id.uuidString)/transcript", body: segments) }
     func pushSummary(_ id: UUID, markdown: String) async throws -> MeetingDetail { try await send("PUT", "meetings/\(id.uuidString)/summary", body: PushSummaryRequest(markdown: markdown, provider: "Mac app")) }
     func process(_ id: UUID, steps: [JobStep]) async throws -> JobInfo { try await send("POST", "meetings/\(id.uuidString)/process", body: ProcessRequest(steps: steps)) }

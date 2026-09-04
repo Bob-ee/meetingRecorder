@@ -42,8 +42,10 @@ struct MainView: View {
                 Group {
                     if sidebar == .actionItems {
                         ActionItemsOverview(selectedMeetingID: $selectedMeetingID)
+                    } else if let projectID = currentProjectID {
+                        ProjectContent(projectID: projectID, searchText: searchText, selection: $selectedMeetingID)
                     } else {
-                        MeetingListView(projectID: currentProjectID, searchText: searchText, selection: $selectedMeetingID)
+                        MeetingListView(projectID: nil, searchText: searchText, selection: $selectedMeetingID)
                     }
                 }
                 .navigationSplitViewColumnWidth(min: 260, ideal: 320)
@@ -132,6 +134,47 @@ struct MainView: View {
             }
             .help("Import an existing recording (e.g. a Zoom local recording)")
         }
+    }
+}
+
+/// A project's middle column: its meetings, or everything the project is still waiting on. The all-projects list
+/// answers "what came out of my calls"; this one answers "where does this project stand".
+struct ProjectContent: View {
+    @EnvironmentObject var store: Store
+    let projectID: UUID
+    let searchText: String
+    @Binding var selection: UUID?
+    @State private var tab: Tab = .meetings
+
+    enum Tab: String, CaseIterable, Identifiable {
+        case meetings = "Meetings", actions = "Action Items"
+        var id: String { rawValue }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Picker("", selection: $tab) {
+                ForEach(Tab.allCases) { t in
+                    if t == .actions {
+                        let open = store.meetings(in: projectID).reduce(0) { $0 + $1.openActionItems.count }
+                        Text(open > 0 ? "\(t.rawValue)  \(open)" : t.rawValue).tag(t)
+                    } else {
+                        Text(t.rawValue).tag(t)
+                    }
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding(.horizontal, 10).padding(.top, 8).padding(.bottom, 6)
+            Divider()
+            switch tab {
+            case .meetings:
+                MeetingListView(projectID: projectID, searchText: searchText, selection: $selection)
+            case .actions:
+                ActionItemsOverview(projectID: projectID, selectedMeetingID: $selection)
+            }
+        }
+        .onChange(of: projectID) { _, _ in tab = .meetings }
     }
 }
 

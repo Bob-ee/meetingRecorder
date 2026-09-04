@@ -117,6 +117,8 @@ public enum ActionItems {
             kept.owner = item.owner
             kept.due = item.due
             kept.dueDate = item.dueDate
+            // Advice the user asked for stays; the quote is only filled in when we didn't already have one.
+            if kept.sourceQuote == nil { kept.sourceQuote = item.sourceQuote }
             if old.dueDate?.date == item.dueDate?.date {
                 kept.calendarAddedAt = old.calendarAddedAt ?? item.calendarAddedAt
             } else {
@@ -145,5 +147,96 @@ public enum MeetingEvents {
             kept.dismissed = old.dismissed || event.dismissed
             return kept
         }
+    }
+}
+
+// MARK: - Carrying items between meetings
+
+public extension ActionItems {
+    /// One of a project's earlier items, changed by a later meeting and needing to be written back.
+    struct CarriedItem: Sendable {
+        public var meetingID: UUID
+        public var item: ActionItem
+        public init(meetingID: UUID, item: ActionItem) { self.meetingID = meetingID; self.item = item }
+    }
+
+    struct CarryForwardResult: Sendable {
+        /// Items belonging to earlier meetings: closed out, or restated with a new owner or deadline.
+        public var edits: [CarriedItem]
+        /// This meeting's own action items, with restatements of earlier ones taken out.
+        public var items: [ActionItem]
+    }
+
+    /// The project's still-open items, numbered for the prompt. `meetingID` — the meeting being summarized — is
+    /// left out, since its own items are being rewritten. When there are more than `limit`, the most recent win,
+    /// but they are always presented oldest first so the refs read in the order things happened.
+    static func openProjectItems(in meetings: [Meeting], excluding meetingID: UUID, limit: Int = 40) -> [OpenProjectItem] {
+        // Walk newest first so a cap keeps the most recent items, then put them back in the order things
+        // happened — including within a meeting, so the refs read the way the list does.
+        var collected: [(item: ActionItem, meeting: Meeting, position: Int)] = []
+        for meeting in meetings.filter({ $0.id != meetingID }).sorted(by: { $0.startedAt > $1.startedAt }) {
+            for (position, item) in meeting.openActionItems.enumerated()
+            where !item.task.trimmingCharacters(in: .whitespaces).isEmpty {
+                collected.append((item, meeting, position))
+                if collected.count >= limit { break }
+            }
+            if collected.count >= limit { break }
+        }
+        collected.sort {
+            $0.meeting.startedAt == $1.meeting.startedAt ? $0.position < $1.position
+                                                         : $0.meeting.startedAt < $1.meeting.startedAt
+        }
+        return collected.enumerated().map { i, pair in
+            OpenProjectItem(ref: "P\(i + 1)", id: pair.item.id, meetingID: pair.meeting.id, task: pair.item.task,
+                            owner: pair.item.owner, dueLabel: pair.item.dueLabel, raisedAt: pair.meeting.startedAt,
+                            meetingTitle: pair.meeting.title)
+        }
+    }
+
+    /// Apply what a summary said about items already open elsewhere in the project: close the ones this meeting
+    /// finished, and fold restatements into the item they restate rather than raising a near-duplicate.
+    static func carryForward(pairs: [(item: ActionItem, duplicateOf: String?)],
+                             completed: [MeetingSummary.Completion],
+                             openItems: [OpenProjectItem],
+                             itemsByID: [UUID: ActionItem],
+                             meetingID: UUID) -> CarryForwardResult {
+        func normalized(_ ref: String?) -> String? {
+            let r = ref?.trimmingCharacters(in: .whitespaces).uppercased()
+            return (r?.isEmpty ?? true) ? nil : r
+        }
+        let byRef = Dictionary(openItems.map { ($0.ref.uppercased(), $0) }, uniquingKeysWith: { a, _ in a })
+        // Keyed by item id so an item named twice in one reply is only written back once.
+        var edited: [UUID: CarriedItem] = [:]
+        var closed: Set<UUID> = []
+
+        for completion in completed {
+            guard let ref = normalized(completion.ref), let open = byRef[ref],
+                  var item = itemsByID[open.id], !item.done else { continue }
+            item.done = true
+            item.lastDiscussedMeetingID = meetingID
+            edited[open.id] = CarriedItem(meetingID: open.meetingID, item: item)
+            closed.insert(open.id)
+        }
+
+        var keep: [ActionItem] = []
+        for (fresh, duplicateOf) in pairs {
+            // No ref, an unknown ref, or one this meeting also closed: treat it as this meeting's own item.
+            guard let ref = normalized(duplicateOf), let open = byRef[ref], !closed.contains(open.id),
+                  var item = edited[open.id]?.item ?? itemsByID[open.id] else {
+                keep.append(fresh)
+                continue
+            }
+            if let owner = fresh.owner, !owner.isEmpty { item.owner = owner }
+            if fresh.dueDate != nil || fresh.due != nil {
+                item.due = fresh.due
+                // Only drop "in calendar" when the day itself moved.
+                if item.dueDate?.date != fresh.dueDate?.date { item.calendarAddedAt = nil }
+                item.dueDate = fresh.dueDate
+            }
+            if item.sourceQuote == nil { item.sourceQuote = fresh.sourceQuote }
+            item.lastDiscussedMeetingID = meetingID
+            edited[open.id] = CarriedItem(meetingID: open.meetingID, item: item)
+        }
+        return CarryForwardResult(edits: Array(edited.values), items: keep)
     }
 }

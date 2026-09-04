@@ -70,6 +70,12 @@ public enum LocalDate {
 extension MeetingSummary {
     /// The model's action items as `ActionItem`s, deadlines resolved against the meeting's date.
     public func resolvedActionItems(for meeting: Meeting, in zone: TimeZone = .current) -> [ActionItem] {
+        resolvedActionItemPairs(for: meeting, in: zone).map(\.item)
+    }
+
+    /// The same list, each item paired with the `duplicate_of` ref the model gave it (nil when it's new work),
+    /// so carry-forward can fold restatements into the item they restate.
+    public func resolvedActionItemPairs(for meeting: Meeting, in zone: TimeZone = .current) -> [(item: ActionItem, duplicateOf: String?)] {
         actionItems.compactMap { item in
             let task = item.task.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !task.isEmpty else { return nil }
@@ -82,7 +88,9 @@ extension MeetingSummary {
                 }
             }
             if let d = due, !LocalDate.plausible(d, for: meeting, in: zone) { due = nil }
-            return ActionItem(task: task, owner: Self.clean(item.owner), due: Self.clean(item.due), dueDate: due)
+            let resolved = ActionItem(task: task, owner: Self.clean(item.owner), due: Self.clean(item.due),
+                                      dueDate: due, sourceQuote: Self.clean(item.sourceQuote))
+            return (resolved, Self.clean(item.duplicateOf))
         }
     }
 

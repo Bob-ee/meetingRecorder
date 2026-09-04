@@ -49,11 +49,23 @@ public struct WhoAmI: Codable, Sendable {
 
 public struct ProjectDetail: Codable, Sendable, Identifiable {
     public var project: Project
+    /// CONTEXT.md — the user's own.
     public var context: String
+    /// LEARNED.md — what the summarizer has worked out for itself.
+    public var learnedContext: String
     public var meetingCount: Int
     public var id: UUID { project.id }
-    public init(project: Project, context: String, meetingCount: Int) {
-        self.project = project; self.context = context; self.meetingCount = meetingCount
+    public init(project: Project, context: String, learnedContext: String = "", meetingCount: Int) {
+        self.project = project; self.context = context; self.learnedContext = learnedContext
+        self.meetingCount = meetingCount
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        project = try c.decode(Project.self, forKey: .project)
+        context = try c.decodeIfPresent(String.self, forKey: .context) ?? ""
+        learnedContext = try c.decodeIfPresent(String.self, forKey: .learnedContext) ?? ""
+        meetingCount = try c.decodeIfPresent(Int.self, forKey: .meetingCount) ?? 0
     }
 }
 
@@ -61,13 +73,19 @@ public struct CreateProjectRequest: Codable, Sendable {
     public var id: UUID?
     public var name: String
     public var context: String?
-    public init(id: UUID? = nil, name: String, context: String? = nil) { self.id = id; self.name = name; self.context = context }
+    public var learnedContext: String?
+    public init(id: UUID? = nil, name: String, context: String? = nil, learnedContext: String? = nil) {
+        self.id = id; self.name = name; self.context = context; self.learnedContext = learnedContext
+    }
 }
 
 public struct PatchProjectRequest: Codable, Sendable {
     public var name: String?
     public var context: String?
-    public init(name: String? = nil, context: String? = nil) { self.name = name; self.context = context }
+    public var learnedContext: String?
+    public init(name: String? = nil, context: String? = nil, learnedContext: String? = nil) {
+        self.name = name; self.context = context; self.learnedContext = learnedContext
+    }
 }
 
 // MARK: Meetings
@@ -168,6 +186,16 @@ public struct PatchActionItemRequest: Codable, Sendable {
     public var done: Bool?
     public init(task: String? = nil, owner: String? = nil, due: String? = nil, done: Bool? = nil) {
         self.task = task; self.owner = owner; self.due = due; self.done = done
+    }
+}
+
+/// The reply to "suggest how to handle this action item".
+public struct AdviceResponse: Codable, Sendable {
+    public var itemID: UUID
+    public var guidance: String
+    public var generatedAt: Date
+    public init(itemID: UUID, guidance: String, generatedAt: Date = Date()) {
+        self.itemID = itemID; self.guidance = guidance; self.generatedAt = generatedAt
     }
 }
 
