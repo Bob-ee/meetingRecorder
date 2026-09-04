@@ -37,9 +37,11 @@ mkdir -p "$ROOT" "$BIN" "$LINK_DIR"
 
 if [ -d "$SRC/.git" ]; then
   say "Updating source…"
-  git -C "$SRC" fetch -q origin "$BRANCH"
-  git -C "$SRC" checkout -q "$BRANCH"
-  git -C "$SRC" reset -q --hard "origin/$BRANCH"
+  # The clone is shallow and single-branch, so widen it before fetching — otherwise asking for any branch
+  # other than the one it was cloned with fails with "pathspec ... did not match any file(s) known to git".
+  git -C "$SRC" remote set-branches origin '*' 2>/dev/null || true
+  git -C "$SRC" fetch -q --depth 1 origin "$BRANCH"
+  git -C "$SRC" checkout -q -B "$BRANCH" FETCH_HEAD
 else
   say "Fetching source…"
   git clone -q --depth 1 -b "$BRANCH" "$REPO" "$SRC"
