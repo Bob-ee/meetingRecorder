@@ -85,10 +85,8 @@ public actor TranscriptionService: Transcriber {
             status("Removing speaker echo from your microphone…")
             let cancelled = EchoCanceller.removeEcho(from: micSamples, reference: remoteSamples,
                                                      rate: AudioLoader.targetRate)
-            Log.pipeline.info("echo cancellation: delay \(cancelled.delaySamples) samples, ERLE \(cancelled.erleDB) dB")
-            // Below a few dB the solve found no echo path worth subtracting — usually headphones, where
-            // there is nothing to cancel. Keep the original rather than spend quality on a guess.
-            if cancelled.erleDB >= 3 {
+            Log.pipeline.notice("echo cancellation: delay \(cancelled.delaySamples) samples, ERLE \(cancelled.erleDB) dB")
+            if cancelled.erleDB >= EchoCanceller.minimumUsefulERLE {
                 micSamples = cancelled.samples
                 trackNotes.append(String(format: "echo -%.0f dB", cancelled.erleDB))
             }
@@ -134,12 +132,10 @@ public actor TranscriptionService: Transcriber {
         return segments
     }
 
-    /// Your speakers bleed into your microphone, so everyone else gets transcribed twice — once on
-    /// the system track where they belong, and once on the mic track wearing your name. Apple's
-    /// voice-processing unit strips that in realtime, but it ducks every other sound on the machine
-    /// while it runs and offers no way to turn that off, so we do it here instead. Both tracks share
-    /// a clock, which is what makes this possible: mic words that repeat what the system track heard
-    /// at the same moment are echo, not you.
+    /// A last sweep for echo the audio stages missed: mic words that repeat what the system track
+    /// heard at the same moment are the meeting coming back out of your speakers, not you. `EchoCanceller`
+    /// should have taken those out of the sound before it ever reached the recogniser, so this is the
+    /// safety net rather than the mechanism — it catches the stretches where cancellation was weakest.
     ///
     /// Matched in runs rather than word by word — you and a remote speaker both saying "yeah" at the
     /// same instant is a coincidence worth keeping; four words in a row lining up is not.
