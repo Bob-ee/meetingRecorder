@@ -18,6 +18,12 @@ import MeetingCore
 /// path back to the microphone, the first reflections — which is then subtracted, leaving whatever the
 /// mic heard that the speakers did not: you.
 ///
+/// Subtraction alone gets to about 15 dB, which is fine when the echo is quiet and nowhere near enough
+/// when it is not: a laptop's own microphone hears its own speakers at roughly the level the meeting
+/// itself is recorded at, so what survives is still louder than a near-end talker. `ResidualEcho` takes
+/// the second half of the job, using the echo this filter did remove to find and silence what it could
+/// not.
+///
 /// A realtime canceller has to adapt sample by sample and can be pushed off course by loud near-end
 /// speech, which matters here because a laptop's mic hears its own speakers at roughly unity gain.
 /// Working offline we can instead solve each stretch in one shot from its own statistics: the room
@@ -39,6 +45,11 @@ public enum EchoCanceller {
     /// paths drift apart over a long meeting.
     public static let defaultTaps = 2048
 
+    /// Below this the solve found no echo path worth having — headphones, most often, where there is
+    /// nothing leaking into the microphone in the first place. Leave the track alone rather than spend
+    /// quality suppressing a guess.
+    public static let minimumUsefulERLE: Float = 3
+
     public static func removeEcho(from mic: [Float], reference: [Float], rate: Double,
                                   taps: Int = defaultTaps) -> Result {
         guard !mic.isEmpty, !reference.isEmpty else {
@@ -48,9 +59,17 @@ public enum EchoCanceller {
         // Sit the window a quarter of its length ahead of the estimate: the filter then spans delays
         // from a little before it to well after, so a slightly wrong estimate costs nothing.
         let aligned = align(reference, by: delay - taps / 4, length: mic.count)
-        let output = cancel(mic: mic, reference: aligned, taps: taps, rate: rate)
-        return Result(samples: output, delaySamples: delay,
-                      erleDB: erle(before: mic, after: output, reference: aligned))
+        let (residual, echo) = cancel(mic: mic, reference: aligned, taps: taps, rate: rate)
+        let linear = erle(before: mic, after: residual, reference: aligned)
+        guard linear >= minimumUsefulERLE else {
+            return Result(samples: mic, delaySamples: delay, erleDB: linear)
+        }
+        // Subtraction gets the predictable part. The rest — speaker distortion, the two capture clocks
+        // drifting against each other — is still loud wherever the speakers were loud, so it is turned
+        // down band by band instead.
+        let suppressed = ResidualEcho.suppress(residual, echo: echo, rate: rate)
+        return Result(samples: suppressed, delaySamples: delay,
+                      erleDB: erle(before: mic, after: suppressed, reference: aligned))
     }
 
     // MARK: - Alignment
@@ -121,8 +140,12 @@ public enum EchoCanceller {
     /// the volume, the laptop gets nudged — without one bad stretch contaminating the rest.
     static let blockSeconds: Double = 20
 
-    private static func cancel(mic: [Float], reference: [Float], taps: Int, rate: Double) -> [Float] {
+    /// Returns the microphone with the echo taken out, and the echo that was taken out — the second
+    /// track is what tells the suppressor where the leftovers are.
+    private static func cancel(mic: [Float], reference: [Float], taps: Int,
+                               rate: Double) -> (residual: [Float], echo: [Float]) {
         var output = mic
+        var echo = [Float](repeating: 0, count: mic.count)
         let blockLength = max(taps * 4, Int(blockSeconds * rate))
         var start = 0
         var lastWeights: [Double]?
@@ -132,12 +155,18 @@ public enum EchoCanceller {
             defer { start = end }
             guard end - start > taps else { continue }
 
-            let weights = solve(mic: mic, reference: reference, from: start, to: end, taps: taps) ?? lastWeights
+            // Every sample the solve looks at needs a full filter's worth of reference behind it, which
+            // the very start of the recording does not have. The first block is fitted from there on
+            // and the filter it finds is applied back across the head.
+            let from = max(start, taps)
+            let weights = (end - from > taps
+                           ? solve(mic: mic, reference: reference, from: from, to: end, taps: taps)
+                           : nil) ?? lastWeights
             guard let weights else { continue }
             lastWeights = weights
-            apply(weights, mic: mic, reference: reference, from: start, to: end, into: &output)
+            apply(weights, mic: mic, reference: reference, from: start, to: end, into: &output, echo: &echo)
         }
-        return output
+        return (output, echo)
     }
 
     /// Builds the normal equations for this block and solves them. The system is the autocorrelation
@@ -212,7 +241,8 @@ public enum EchoCanceller {
     /// Subtracts the predicted echo, but only if doing so actually made the block quieter — a block
     /// the solve got wrong is left exactly as it was rather than made worse.
     private static func apply(_ weights: [Double], mic: [Float], reference: [Float],
-                              from start: Int, to end: Int, into output: inout [Float]) {
+                              from start: Int, to end: Int, into output: inout [Float],
+                              echo: inout [Float]) {
         let taps = weights.count
         let filter = weights.map(Float.init).reversed().map { $0 }
         var candidate = [Float](repeating: 0, count: end - start)
@@ -232,7 +262,10 @@ public enum EchoCanceller {
         mic.withUnsafeBufferPointer { vDSP_svesq($0.baseAddress! + start, 1, &beforeEnergy, vDSP_Length(end - start)) }
         candidate.withUnsafeBufferPointer { vDSP_svesq($0.baseAddress!, 1, &afterEnergy, vDSP_Length(end - start)) }
         guard afterEnergy < beforeEnergy else { return }
-        for n in start..<end { output[n] = candidate[n - start] }
+        for n in start..<end {
+            output[n] = candidate[n - start]
+            echo[n] = mic[n] - candidate[n - start]
+        }
     }
 
     // MARK: - Measurement
