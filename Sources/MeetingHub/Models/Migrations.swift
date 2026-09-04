@@ -128,16 +128,26 @@ struct CreateSchemaV1: AsyncMigration {
     }
 }
 
+/// Add one column, treating "it's already there" as success.
+///
+/// SQLite has no `ADD COLUMN IF NOT EXISTS`, and a migration that adds several columns is not atomic there: if it
+/// fails partway, nothing is recorded and every later startup dies on the columns that did land. Adding them one
+/// at a time and shrugging off duplicates makes these migrations able to finish what an earlier attempt started.
+func addColumn(_ db: Database, _ schema: String, _ name: String, _ type: DatabaseSchema.DataType) async throws {
+    do {
+        try await db.schema(schema).field(FieldKey(stringLiteral: name), type).update()
+    } catch {
+        let text = String(describing: error).lowercased()
+        guard text.contains("duplicate column") || text.contains("already exists") else { throw error }
+    }
+}
+
 /// Calendar support: suggested events on meetings, resolved deadlines and "in calendar" on action items.
 struct AddCalendarFieldsV2: AsyncMigration {
     func prepare(on db: Database) async throws {
-        try await db.schema(MeetingModel.schema)
-            .field("events", .string)
-            .update()
-        try await db.schema(ActionItemModel.schema)
-            .field("due_date", .string)
-            .field("calendar_added_at", .datetime)
-            .update()
+        try await addColumn(db, MeetingModel.schema, "events", .string)
+        try await addColumn(db, ActionItemModel.schema, "due_date", .string)
+        try await addColumn(db, ActionItemModel.schema, "calendar_added_at", .datetime)
     }
 
     func revert(on db: Database) async throws {
@@ -150,15 +160,11 @@ struct AddCalendarFieldsV2: AsyncMigration {
 /// item came from in the transcript, the advice written for it on request, and the last meeting to bring it up.
 struct AddProjectContextFieldsV3: AsyncMigration {
     func prepare(on db: Database) async throws {
-        try await db.schema(ProjectModel.schema)
-            .field("learned_context", .string)
-            .update()
-        try await db.schema(ActionItemModel.schema)
-            .field("source_quote", .string)
-            .field("guidance", .string)
-            .field("guidance_at", .datetime)
-            .field("last_discussed_meeting_id", .uuid)
-            .update()
+        try await addColumn(db, ProjectModel.schema, "learned_context", .string)
+        try await addColumn(db, ActionItemModel.schema, "source_quote", .string)
+        try await addColumn(db, ActionItemModel.schema, "guidance", .string)
+        try await addColumn(db, ActionItemModel.schema, "guidance_at", .datetime)
+        try await addColumn(db, ActionItemModel.schema, "last_discussed_meeting_id", .uuid)
     }
 
     func revert(on db: Database) async throws {
