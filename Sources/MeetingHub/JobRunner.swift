@@ -220,6 +220,8 @@ actor JobRunner {
         }
         for id in touched {
             guard let m = try await MeetingModel.query(on: db).filter(\.$id == id).with(\.$actionItems).with(\.$project).first() else { continue }
+            // Its own columns didn't change, only its items — see HubQueries.touch.
+            m.updatedAt = Date()
             try await m.save(on: db)
             app.eventBus.post(HubEvent(kind: .meetingUpdated, meetingID: id, projectID: m.$project.id))
             await mirror(m)

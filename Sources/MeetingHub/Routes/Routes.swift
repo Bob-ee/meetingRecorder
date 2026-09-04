@@ -117,6 +117,16 @@ enum HubQueries {
         return (ActionItems.openProjectItems(in: dtos, excluding: meetingID), byID)
     }
 
+    /// Mark a meeting as changed, even when none of its own columns did.
+    ///
+    /// Fluent skips the UPDATE entirely for a model with no dirty fields, so saving a meeting purely to bump its
+    /// `updated_at` after editing one of its action items is a no-op — and clients, which pull by "what changed
+    /// since", never find out. Setting the timestamp by hand makes the row dirty so the write actually happens.
+    static func touch(_ meeting: MeetingModel, on db: Database) async throws {
+        meeting.updatedAt = Date()
+        try await meeting.save(on: db)
+    }
+
     static func broadcastMeeting(_ req: Request, _ meeting: MeetingModel) {
         req.application.eventBus.post(HubEvent(kind: .meetingUpdated, meetingID: meeting.id, projectID: meeting.$project.id))
         let runner = req.application.jobRunner
@@ -305,7 +315,7 @@ func meetingRoutes(_ r: RoutesBuilder) {
             meeting.$project.id = target.id!
             ExportMirror(root: req.application.hubPaths.export).remove(meetingID: meeting.id!, workspace: p.workspace.name, projectName: oldProject.name)
         }
-        try await meeting.save(on: req.db)
+        try await HubQueries.touch(meeting, on: req.db)
         let fresh = try await HubQueries.meeting(req, id: meeting.id!)
         HubQueries.broadcastMeeting(req, fresh)
         return fresh.dto()
@@ -342,7 +352,7 @@ func meetingRoutes(_ r: RoutesBuilder) {
         try await job.save(on: req.db)
         meeting.meetingStatus = .queued
         meeting.errorMessage = nil
-        try await meeting.save(on: req.db)
+        try await HubQueries.touch(meeting, on: req.db)
         req.application.eventBus.post(HubEvent(kind: .meetingUpdated, meetingID: meeting.id, projectID: meeting.$project.id))
         req.application.eventBus.post(HubEvent(kind: .jobUpdated, meetingID: meeting.id, job: job.dto))
         let runner = req.application.jobRunner
@@ -397,7 +407,7 @@ func meetingRoutes(_ r: RoutesBuilder) {
         }
         try await TranscriptModel(meetingID: meeting.id!, segments: segments).save(on: req.db)
         if meeting.meetingStatus == .recorded || meeting.meetingStatus == .failed { meeting.meetingStatus = .transcribed }
-        try await meeting.save(on: req.db)
+        try await HubQueries.touch(meeting, on: req.db)
         let fresh = try await HubQueries.meeting(req, id: meeting.id!)
         HubQueries.broadcastMeeting(req, fresh)
         return try await HubQueries.detail(req, fresh)
@@ -413,7 +423,7 @@ func meetingRoutes(_ r: RoutesBuilder) {
         try await SummaryModel(meetingID: meeting.id!, summary: summary, markdown: body.markdown, provider: body.provider ?? "client").save(on: req.db)
         if meeting.meetingStatus != .ready { meeting.meetingStatus = .ready }
         meeting.errorMessage = nil
-        try await meeting.save(on: req.db)
+        try await HubQueries.touch(meeting, on: req.db)
         let fresh = try await HubQueries.meeting(req, id: meeting.id!)
         HubQueries.broadcastMeeting(req, fresh)
         return try await HubQueries.detail(req, fresh)
@@ -451,7 +461,7 @@ func actionItemRoutes(_ r: RoutesBuilder) {
         guard !task.isEmpty else { throw Abort(.badRequest, reason: "task is empty") }
         let item = ActionItem(task: task, owner: body.owner, due: body.due, isManual: true)
         try await ActionItemModel(item, meetingID: meeting.id!, position: meeting.actionItems.count).save(on: req.db)
-        try await meeting.save(on: req.db)   // bumps updated_at
+        try await HubQueries.touch(meeting, on: req.db)   // bumps updated_at
         let fresh = try await HubQueries.meeting(req, id: meeting.id!)
         HubQueries.broadcastMeeting(req, fresh)
         return fresh.dto()
@@ -464,7 +474,7 @@ func actionItemRoutes(_ r: RoutesBuilder) {
         for (i, item) in items.enumerated() where !item.task.trimmingCharacters(in: .whitespaces).isEmpty {
             try await ActionItemModel(item, meetingID: meeting.id!, position: i).save(on: req.db)
         }
-        try await meeting.save(on: req.db)
+        try await HubQueries.touch(meeting, on: req.db)
         let fresh = try await HubQueries.meeting(req, id: meeting.id!)
         HubQueries.broadcastMeeting(req, fresh)
         return fresh.dto()
@@ -480,7 +490,7 @@ func actionItemRoutes(_ r: RoutesBuilder) {
         if let due = body.due { row.due = due.isEmpty ? nil : due }
         if let done = body.done { row.done = done }
         try await row.save(on: req.db)
-        try await meeting.save(on: req.db)
+        try await HubQueries.touch(meeting, on: req.db)
         let fresh = try await HubQueries.meeting(req, id: meeting.id!)
         HubQueries.broadcastMeeting(req, fresh)
         return fresh.dto()
@@ -507,7 +517,7 @@ func actionItemRoutes(_ r: RoutesBuilder) {
         row.guidance = text
         row.guidanceAt = Date()
         try await row.save(on: req.db)
-        try await meeting.save(on: req.db)
+        try await HubQueries.touch(meeting, on: req.db)
         let fresh = try await HubQueries.meeting(req, id: meeting.id!)
         HubQueries.broadcastMeeting(req, fresh)
         return AdviceResponse(itemID: itemID, guidance: text, generatedAt: row.guidanceAt ?? Date())
@@ -518,7 +528,7 @@ func actionItemRoutes(_ r: RoutesBuilder) {
         let itemID = try HubQueries.uuid(req, "item")
         guard let row = meeting.actionItems.first(where: { $0.id == itemID }) else { throw Abort(.notFound, reason: "no such action item") }
         try await row.delete(on: req.db)
-        try await meeting.save(on: req.db)
+        try await HubQueries.touch(meeting, on: req.db)
         let fresh = try await HubQueries.meeting(req, id: meeting.id!)
         HubQueries.broadcastMeeting(req, fresh)
         return fresh.dto()
