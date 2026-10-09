@@ -41,7 +41,14 @@ final class Pipeline: ObservableObject {
 
     /// Re-run anything that was interrupted (app quit mid-pipeline) on launch.
     func resumeUnfinished() {
+        let viaHub = settings.mode == .hub && hub?.isEnabled == true
         for m in store.meetings {
+            // Through a hub, the only unfinished work that is this Mac's is getting its own audio there. Later
+            // states are the hub's progress, and a meeting with no audio here was recorded on another device.
+            if viaHub, m.status != .recording {
+                let owedToHub = (m.status == .recorded || m.status == .uploading) && store.hasAudio(m)
+                if !owedToHub { continue }
+            }
             switch m.status {
             case .recording:
                 var fixed = m

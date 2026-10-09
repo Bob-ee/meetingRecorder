@@ -1,6 +1,8 @@
+import Combine
 import Foundation
 import MeetingCore
 import MeetingEngine
+import MeetingSync
 
 enum ProcessingMode: String { case local, hub }
 
@@ -12,110 +14,65 @@ enum StoreChange {
     case deletedProject(UUID)
 }
 
-/// Keeps this Mac and the hub in step. The local folder stays the UI's source of truth; the hub does the
-/// processing and holds the copy every other device sees.
+/// What this Mac does with a hub beyond staying in sync with it (that part is `HubConnection`, shared with the
+/// iOS app): getting a recording's audio there and asking for it to be processed, lining the projects in the
+/// local folder up with the hub's the first time they meet, and the hub-side settings.
 ///
-/// * `process(_:steps:)` — upload audio, ask the hub to transcribe/summarize, mirror progress, pull the results.
-///   Survives being offline: the meeting waits in `uploading` and retries until the hub answers.
-/// * local edits (`noteChange`) are pushed as patches, debounced; if the push fails they stay dirty and retry.
-/// * `pull()` brings in changes made elsewhere (phone, web, another Mac); server-sent events trigger it early.
+/// The local folder stays the UI's source of truth. A meeting that can't be uploaded because the hub is out of
+/// reach waits in `uploading` and is retried until the hub answers; nothing is lost.
 @MainActor
 final class HubSync: ObservableObject {
-    enum State: Equatable {
-        case off, connecting, connected, offline(String), rejected(String)
-
-        var label: String {
-            switch self {
-            case .off: return "Not connected"
-            case .connecting: return "Connecting…"
-            case .connected: return "Connected"
-            case .offline(let why): return "Hub unreachable — \(why)"
-            case .rejected(let why): return why
-            }
-        }
-        var isConnected: Bool { self == .connected }
-    }
-
-    @Published private(set) var state: State = .off
-    @Published private(set) var whoAmI: WhoAmI?
     @Published private(set) var capabilities: Capabilities?
     @Published var hubSettings: HubSettings?
     @Published private(set) var migration: String?
-    @Published private(set) var lastPull: Date?
 
     private let store: Store
     private let settings: AppSettings
     private weak var pipeline: Pipeline?
-    private(set) var client: HubClient?
-
-    private var eventTask: Task<Void, Never>?
-    private var pullTask: Task<Void, Never>?
-    private var pushTask: Task<Void, Never>?
-    private var processing: Set<UUID> = []
-    private var applyingRemote = false
-    private var pullRequested = false
-
-    private var dirtyMeetings: Set<UUID> { didSet { persist("hubDirtyMeetings", dirtyMeetings) } }
-    private var dirtyProjects: Set<UUID> { didSet { persist("hubDirtyProjects", dirtyProjects) } }
-    private var pendingDeletes: Set<UUID> { didSet { persist("hubPendingDeletes", pendingDeletes) } }
+    private let replica: StoreReplica
+    private let connection: HubConnection
+    private var forwarding: AnyCancellable?
 
     init(store: Store, settings: AppSettings, pipeline: Pipeline) {
         self.store = store
         self.settings = settings
         self.pipeline = pipeline
-        dirtyMeetings = Self.restore("hubDirtyMeetings")
-        dirtyProjects = Self.restore("hubDirtyProjects")
-        pendingDeletes = Self.restore("hubPendingDeletes")
+        replica = StoreReplica(store: store)
+        connection = HubConnection(replica: replica, ledgerURL: Self.ledgerURL)
+        forwarding = connection.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }
+        connection.prepare = { [weak self] client in await self?.prepare(client) }
+        connection.onEvent = { [weak self] event in self?.handle(event) }
     }
 
-    var isEnabled: Bool { settings.mode == .hub && client != nil }
-    func isProcessing(_ id: UUID) -> Bool { processing.contains(id) }
+    private static var ledgerURL: URL {
+        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        return support.appendingPathComponent("MeetingRecorder/hub-ledger.json")
+    }
+
+    var state: HubConnection.State { connection.state }
+    var whoAmI: WhoAmI? { connection.whoAmI }
+    var lastSync: Date? { connection.lastSync }
+    var client: HubClient? { connection.client }
+    var isPaired: Bool { PairingCode(parsing: settings.hubPairingCode) != nil }
+    var isEnabled: Bool { settings.mode == .hub && connection.client != nil }
+    func isProcessing(_ id: UUID) -> Bool { replica.uploading.contains(id) }
 
     // MARK: - Connection
 
     /// Call once at launch and whenever the pairing code or mode changes.
     func configure() {
-        client = HubClient(pairingCode: settings.hubPairingCode)
-        if settings.mode == .hub, client != nil {
-            Task { await connect() }
+        if settings.mode == .hub, isPaired {
+            connection.use(pairingCode: settings.hubPairingCode)
         } else {
-            disconnect()
+            connection.disconnect()
         }
     }
 
-    func connect() async {
-        guard let client else { state = .off; return }
-        state = .connecting
-        do {
-            let me = try await client.me()
-            whoAmI = me
-            state = .connected
-            capabilities = try? await client.capabilities()
-            hubSettings = try? await client.settings()
-            startEventLoop()
-            startPullLoop()
-            await reconcileProjects()
-            await pushDirty()
-            await pull()
-        } catch let error as HubClientError where error.isUnauthorized {
-            state = .rejected("The hub rejected this pairing code — run `meetinghub pair` on the hub for a new one")
-        } catch {
-            state = .offline(error.localizedDescription)
-            startPullLoop()   // keeps retrying the connection
-        }
-    }
-
-    func disconnect() {
-        eventTask?.cancel(); eventTask = nil
-        pullTask?.cancel(); pullTask = nil
-        state = .off
-        whoAmI = nil
-    }
+    func connect() async { await connection.connect() }
 
     /// Validate a pairing code against the hub, then keep it and switch to hub mode.
     func pair(code: String) async throws -> WhoAmI {
-        guard let candidate = HubClient(pairingCode: code) else { throw HubClientError.badURL }
-        let me = try await candidate.me()
+        let me = try await HubConnection.validate(pairingCode: code)
         settings.hubPairingCode = code.trimmingCharacters(in: .whitespacesAndNewlines)
         settings.processingMode = ProcessingMode.hub.rawValue
         configure()
@@ -123,91 +80,94 @@ final class HubSync: ObservableObject {
     }
 
     func forget() {
-        disconnect()
+        connection.disconnect()
+        connection.engine.reset()
         settings.hubPairingCode = ""
         settings.processingMode = ProcessingMode.local.rawValue
-        client = nil
         hubSettings = nil
         capabilities = nil
     }
 
-    private func startEventLoop() {
-        eventTask?.cancel()
-        eventTask = Task { [weak self] in
-            while !Task.isCancelled {
-                guard let self, let client = self.client else { return }
-                do {
-                    for try await event in client.events() {
-                        await self.handle(event)
-                    }
-                } catch {}
-                if Task.isCancelled { return }
-                try? await Task.sleep(nanoseconds: 5_000_000_000)
-            }
-        }
+    /// A pairing code for another of the user's devices, to show as a QR.
+    func pairDevice(named name: String) async throws -> PairingCode {
+        guard let client else { throw HubClientError.notPaired }
+        return try await client.pairDevice(named: name)
     }
 
-    private func startPullLoop() {
-        pullTask?.cancel()
-        pullTask = Task { [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 60_000_000_000)
-                guard let self else { return }
-                if self.state.isConnected {
-                    await self.pushDirty()
-                    await self.pull()
-                } else if self.settings.mode == .hub {
-                    await self.connect()
-                    return   // connect() starts a fresh loop
-                }
-            }
-        }
+    private func prepare(_ client: HubClient) async {
+        capabilities = try? await client.capabilities()
+        hubSettings = try? await client.settings()
+        await reconcileProjects(client)
     }
 
-    private func handle(_ event: HubEvent) async {
+    private func handle(_ event: HubEvent) {
         switch event.kind {
-        case .ping: return
-        case .meetingUpdated, .projectUpdated, .projectDeleted:
-            if let id = event.meetingID, processing.contains(id) { return }
-            schedulePull()
-        case .meetingDeleted:
-            if let id = event.meetingID, store.meeting(id) != nil, !dirtyMeetings.contains(id) {
-                applyingRemote = true
-                store.deleteMeeting(id)
-                applyingRemote = false
-            }
         case .jobUpdated:
-            return   // the processing loop polls its own job
+            // While this Mac is still uploading, the progress line is its own.
+            guard let job = event.job, !replica.uploading.contains(job.meetingID) else { return }
+            let running = job.status == .queued || job.status == .running
+            pipeline?.setProgress(job.meetingID, running ? job.progress : nil)
         case .settingsUpdated:
-            if let client { hubSettings = try? await client.settings() }
+            Task { [weak self] in
+                guard let client = self?.client else { return }
+                self?.hubSettings = try? await client.settings()
+            }
+        default:
+            break
         }
     }
 
-    private func schedulePull() {
-        guard !pullRequested else { return }
-        pullRequested = true
-        Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 2_000_000_000)
-            guard let self else { return }
-            self.pullRequested = false
-            await self.pull()
+    // MARK: - Local edits
+
+    func noteChange(_ change: StoreChange) {
+        guard settings.mode == .hub else { return }
+        switch change {
+        case .meeting(let m), .notes(let m): connection.note(.meeting(m.id))
+        case .deletedMeeting(let id): connection.note(.removedMeeting(id))
+        case .project(let p): connection.note(.project(p.id))
+        case .deletedProject(let id): connection.note(.removedProject(id))
         }
     }
 
-    private func markOffline(_ error: Error) {
-        if error.isConnectivityProblem { state = .offline(error.localizedDescription) }
+    // MARK: - Projects
+
+    /// Line up the projects in the local folder with the hub's. A local project with the same name as a hub
+    /// project (and an id the hub doesn't know) takes the hub's id, so "Inbox" here and "Inbox" there are one
+    /// project; any other project the hub hasn't got is sent to it.
+    private func reconcileProjects(_ client: HubClient) async {
+        guard let remote = try? await client.projects() else { return }
+        let remoteIDs = Set(remote.map(\.id))
+        for theirs in remote where store.project(theirs.id) == nil {
+            guard let mine = store.projects.first(where: {
+                !remoteIDs.contains($0.id) && !connection.engine.tracks(project: $0.id)
+                    && $0.name.caseInsensitiveCompare(theirs.project.name) == .orderedSame
+            }) else { continue }
+            Log.hub.info("adopting hub id for project “\(mine.name)”")
+            // The hub's copy is about to replace this one. Anything written here that the hub has no version
+            // of goes up first, so adopting an id never costs the user their notes.
+            let context = store.projectContext(mine.id), learned = store.learnedContext(mine.id)
+            store.adoptProjectID(mine.id, newID: theirs.id)
+            let patch = PatchProjectRequest(context: theirs.context.isEmpty && !context.isEmpty ? context : nil,
+                                            learnedContext: theirs.learnedContext.isEmpty && !learned.isEmpty ? learned : nil)
+            if patch.context != nil || patch.learnedContext != nil { _ = try? await client.patchProject(theirs.id, patch) }
+        }
+        for project in store.projects where !remoteIDs.contains(project.id) { connection.note(.project(project.id)) }
     }
 
     // MARK: - Processing
 
     func process(_ meeting: Meeting, steps: [JobStep]) {
-        guard !processing.contains(meeting.id) else { return }
-        processing.insert(meeting.id)
+        guard !replica.uploading.contains(meeting.id) else { return }
+        replica.uploading.insert(meeting.id)
         Task { await self.processLoop(meeting.id, steps: steps) }
     }
 
     private func processLoop(_ id: UUID, steps requested: [JobStep]) async {
-        defer { processing.remove(id); pipeline?.setProgress(id, nil) }
+        defer {
+            replica.uploading.remove(id)
+            // The hub takes it from here; its status and results arrive like any other change.
+            Task { await self.connection.sync() }
+        }
         var attempt = 0
         while true {
             guard let client, store.meeting(id) != nil else { return }
@@ -217,7 +177,6 @@ final class HubSync: ObservableObject {
             } catch let error where error.isConnectivityProblem {
                 attempt += 1
                 Log.hub.warning("hub unreachable while processing: \(error.localizedDescription)")
-                markOffline(error)
                 setStatus(id, .uploading, progress: "Waiting for the hub — retrying (\(error.localizedDescription))")
                 try? await Task.sleep(nanoseconds: UInt64(min(30 * attempt, 120)) * 1_000_000_000)
             } catch {
@@ -229,18 +188,16 @@ final class HubSync: ObservableObject {
     }
 
     private func processOnce(_ id: UUID, steps requested: [JobStep], client: HubClient) async throws {
-        guard var meeting = store.meeting(id) else { return }
+        guard let meeting = store.meeting(id) else { return }
         setStatus(id, .uploading, progress: "Preparing upload…")
 
         // Raw CAF captures are ~700 MB/hour; ship AAC instead.
         let tracks = await prepareTracks(meeting)
-        meeting = store.meeting(id) ?? meeting
 
-        try await ensureProjectOnHub(meeting.projectID, client: client)
-        _ = try await client.createMeeting(CreateMeetingRequest(
-            id: meeting.id, projectID: meeting.projectID, title: meeting.title, titleIsAuto: meeting.titleIsAuto,
-            startedAt: meeting.startedAt, durationSeconds: meeting.durationSeconds, source: meeting.source,
-            importedFileName: meeting.importedFileName))
+        // The meeting (and its project) have to exist on the hub before audio can be attached to them.
+        connection.note(.project(meeting.projectID))
+        connection.note(.newMeeting(id))
+        try await connection.push()
 
         let already = try await client.audio(id)
         for (kind, url) in tracks {
@@ -262,53 +219,23 @@ final class HubSync: ObservableObject {
         }
         _ = try await client.process(id, steps: steps)
         setStatus(id, .queued, progress: "Queued on \(whoAmI?.hub.name ?? "the hub")")
-
-        // Follow the job until the hub is done, mirroring its state.
-        while true {
-            try await Task.sleep(nanoseconds: 3_000_000_000)
-            let detail = try await client.meeting(id)
-            guard store.meeting(id) != nil else { return }
-            switch detail.meeting.status {
-            case .ready:
-                apply(detail)
-                pipeline?.setProgress(id, nil)
-                return
-            case .failed:
-                apply(detail)
-                fail(id, detail.meeting.errorMessage ?? detail.job?.error ?? "The hub couldn't process this meeting")
-                return
-            case .queued, .transcribing, .summarizing, .transcribed:
-                setStatus(id, detail.meeting.status, progress: detail.job?.progress)
-            default:
-                if let job = detail.job, job.status == .failed {
-                    fail(id, job.error ?? "The hub couldn't process this meeting")
-                    return
-                }
-                if let job = detail.job, job.status == .done {
-                    apply(detail)
-                    return
-                }
-            }
-        }
     }
 
-    /// Compress raw tracks and return what should be uploaded.
-    /// Have the hub re-derive a project's learned note, and bring the result down to this Mac.
+    /// Have the hub re-derive a project's learned note; the result comes down with the next sync.
     func refreshProjectContext(_ projectID: UUID) async throws {
         guard let client else { throw HubClientError.notPaired }
-        let detail = try await client.refreshProjectContext(projectID)
-        applyingRemote = true
-        store.setLearnedContext(projectID, detail.learnedContext, note: "Rewritten on the hub.")
-        applyingRemote = false
+        _ = try await client.refreshProjectContext(projectID)
+        await connection.sync()
     }
 
-    /// Have the hub write "how would you handle this" for one action item. It keeps a copy; the text comes back
-    /// here so the local store — which is what the UI reads — has it too.
+    /// Have the hub write "how would you handle this" for one action item. It keeps a copy, which every device
+    /// gets by syncing; the text also comes back here for the caller that is waiting on it.
     func advise(item: UUID, in meetingID: UUID) async throws -> String {
         guard let client else { throw HubClientError.notPaired }
         return try await client.advise(meeting: meetingID, item: item).guidance
     }
 
+    /// Compress raw tracks and return what should be uploaded.
     private func prepareTracks(_ meeting: Meeting) async -> [(AudioTrackKind, URL)] {
         var result: [(AudioTrackKind, URL)] = []
         let folder = store.folder(for: meeting)
@@ -332,23 +259,11 @@ final class HubSync: ObservableObject {
         }
     }
 
-    private func ensureProjectOnHub(_ projectID: UUID, client: HubClient) async throws {
-        guard let project = store.project(projectID) else { return }
-        if let remote = try? await client.projects(), !remote.contains(where: { $0.project.id == project.id }),
-           remote.contains(where: { $0.project.name.caseInsensitiveCompare(project.name) == .orderedSame }) {
-            await reconcileProjects()
-            return
-        }
-        _ = try await client.createProject(CreateProjectRequest(id: project.id, name: project.name, context: store.projectContext(project.id)))
-    }
-
     private func setStatus(_ id: UUID, _ status: MeetingStatus, progress: String?) {
         if var m = store.meeting(id), m.status != status {
             m.status = status
             m.errorMessage = nil
-            applyingRemote = true
             store.update(m)
-            applyingRemote = false
         }
         pipeline?.setProgress(id, progress)
     }
@@ -357,228 +272,24 @@ final class HubSync: ObservableObject {
         guard var m = store.meeting(id) else { return }
         m.status = .failed
         m.errorMessage = message
-        applyingRemote = true
         store.update(m)
-        applyingRemote = false
         pipeline?.setProgress(id, nil)
-    }
-
-    // MARK: - Applying what the hub has
-
-    private func apply(_ detail: MeetingDetail) {
-        applyingRemote = true
-        defer { applyingRemote = false }
-        let remote = detail.meeting
-        guard var local = store.meeting(remote.id) else { return }
-        let dirty = dirtyMeetings.contains(remote.id)
-        if !dirty {
-            local.title = remote.title
-            local.titleIsAuto = remote.titleIsAuto
-            local.speakerNames = remote.speakerNames
-            local.actionItems = remote.actionItems
-            // A hub from before events existed always sends none; don't let that erase ours.
-            if !remote.events.isEmpty || local.events.isEmpty { local.events = remote.events }
-        } else {
-            // Keep our unsent edits, but take new items the hub found.
-            local.actionItems = ActionItems.merge(existing: local.actionItems, fresh: remote.actionItems)
-            local.events = MeetingEvents.merge(existing: local.events, fresh: remote.events)
-        }
-        local.status = remote.status
-        local.errorMessage = remote.errorMessage
-        if remote.durationSeconds > 0 { local.durationSeconds = remote.durationSeconds }
-        store.update(local)
-        if !detail.transcript.isEmpty { store.saveTranscript(detail.transcript, for: local) }
-        if let md = detail.summaryMarkdown { store.saveSummary(md, for: local) }
-        if !dirty, !detail.notes.isEmpty, detail.notes != store.notes(for: local) { store.saveNotes(detail.notes, for: local) }
-    }
-
-    private func createLocal(from detail: MeetingDetail) {
-        applyingRemote = true
-        defer { applyingRemote = false }
-        let remote = detail.meeting
-        if store.project(remote.projectID) == nil {
-            store.createProject(id: remote.projectID, name: detail.projectName)
-        }
-        _ = store.createMeeting(id: remote.id, in: remote.projectID, title: remote.title, source: remote.source, startedAt: remote.startedAt)
-        applyingRemote = false
-        apply(detail)
-    }
-
-    // MARK: - Projects
-
-    /// Line up projects on both sides. A local project with the same name as a hub project (and an id the hub
-    /// doesn't know) takes the hub's id, so "Inbox" here and "Inbox" there are one project. Everything else is
-    /// created on whichever side is missing it.
-    func reconcileProjects() async {
-        guard isEnabled, let client else { return }
-        do {
-            let remote = try await client.projects()
-            let remoteIDs = Set(remote.map(\.project.id))
-            applyingRemote = true
-            for rp in remote {
-                if store.project(rp.project.id) != nil { continue }
-                if let local = store.projects.first(where: { !remoteIDs.contains($0.id) && $0.name.caseInsensitiveCompare(rp.project.name) == .orderedSame }) {
-                    Log.hub.info("adopting hub id for project “\(local.name)”")
-                    store.adoptProjectID(local.id, newID: rp.project.id)
-                    dirtyProjects.remove(local.id)
-                    if store.projectContext(rp.project.id).isEmpty, !rp.context.isEmpty { store.setProjectContext(rp.project.id, rp.context) }
-                    if store.learnedContext(rp.project.id).isEmpty, !rp.learnedContext.isEmpty {
-                        store.setLearnedContext(rp.project.id, rp.learnedContext)
-                    }
-                } else {
-                    store.createProject(id: rp.project.id, name: rp.project.name)
-                    if !rp.context.isEmpty { store.setProjectContext(rp.project.id, rp.context) }
-                    if !rp.learnedContext.isEmpty { store.setLearnedContext(rp.project.id, rp.learnedContext) }
-                }
-            }
-            applyingRemote = false
-            for p in store.projects where !remoteIDs.contains(p.id) {
-                _ = try await client.createProject(CreateProjectRequest(id: p.id, name: p.name,
-                                                                       context: store.projectContext(p.id),
-                                                                       learnedContext: store.learnedContext(p.id)))
-            }
-        } catch {
-            applyingRemote = false
-            Log.hub.error("project reconcile failed: \(error.localizedDescription)")
-            markOffline(error)
-        }
-    }
-
-    // MARK: - Pull
-
-    func pull() async {
-        guard isEnabled, let client, state.isConnected else { return }
-        do {
-            let remoteProjects = try await client.projects()
-            applyingRemote = true
-            for rp in remoteProjects where store.project(rp.project.id) == nil && !dirtyProjects.contains(rp.project.id) {
-                if store.projects.contains(where: { $0.name.caseInsensitiveCompare(rp.project.name) == .orderedSame }) {
-                    applyingRemote = false
-                    await reconcileProjects()   // a same-named project appeared; merge instead of duplicating
-                    applyingRemote = true
-                    continue
-                }
-                store.createProject(id: rp.project.id, name: rp.project.name)
-                if !rp.context.isEmpty { store.setProjectContext(rp.project.id, rp.context) }
-                if !rp.learnedContext.isEmpty { store.setLearnedContext(rp.project.id, rp.learnedContext) }
-            }
-            // In hub mode the hub does the summarizing, so it owns the learned note — take its copy.
-            for rp in remoteProjects where store.project(rp.project.id) != nil {
-                if rp.learnedContext != store.learnedContext(rp.project.id) {
-                    store.setLearnedContext(rp.project.id, rp.learnedContext, note: "Updated on the hub.")
-                }
-            }
-            applyingRemote = false
-
-            let since = settings.hubLastSync > 0 ? Date(timeIntervalSince1970: settings.hubLastSync - 300) : nil
-            let remote = try await client.meetings(since: since)
-            for rm in remote where !processing.contains(rm.id) && !pendingDeletes.contains(rm.id) {
-                if let local = store.meeting(rm.id) {
-                    guard rm.updatedAt > local.updatedAt.addingTimeInterval(1), !dirtyMeetings.contains(rm.id) else { continue }
-                    let detail = try await client.meeting(rm.id)
-                    apply(detail)
-                } else if rm.status == .ready || rm.status == .failed || since != nil {
-                    let detail = try await client.meeting(rm.id)
-                    createLocal(from: detail)
-                }
-            }
-            settings.hubLastSync = Date().timeIntervalSince1970
-            lastPull = Date()
-        } catch {
-            applyingRemote = false
-            Log.hub.error("pull failed: \(error.localizedDescription)")
-            markOffline(error)
-        }
-    }
-
-    // MARK: - Push (local edits → hub)
-
-    func noteChange(_ change: StoreChange) {
-        guard settings.mode == .hub, !applyingRemote else { return }
-        switch change {
-        case .meeting(let m): dirtyMeetings.insert(m.id)
-        case .notes(let m): dirtyMeetings.insert(m.id)
-        case .deletedMeeting(let id): dirtyMeetings.remove(id); pendingDeletes.insert(id)
-        case .project(let p): dirtyProjects.insert(p.id)
-        case .deletedProject(let id):
-            dirtyProjects.remove(id)
-            if let client { Task { try? await client.deleteProject(id) } }
-        }
-        pushTask?.cancel()
-        pushTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 1_500_000_000)
-            guard !Task.isCancelled else { return }
-            await self?.pushDirty()
-        }
-    }
-
-    func pushDirty() async {
-        guard isEnabled, let client else { return }
-        for id in pendingDeletes {
-            do { try await client.deleteMeeting(id); pendingDeletes.remove(id) }
-            catch let e as HubClientError where !e.isConnectivityProblem { pendingDeletes.remove(id) }   // already gone
-            catch { Log.hub.error("delete push failed: \(error.localizedDescription)"); markOffline(error); return }
-        }
-        for id in dirtyProjects {
-            guard let p = store.project(id) else { dirtyProjects.remove(id); continue }
-            do {
-                // The learned note only goes up when the project is new to the hub — after that the hub owns it,
-                // and pushing this Mac's copy back would undo whatever it last wrote.
-                _ = try await client.createProject(CreateProjectRequest(id: p.id, name: p.name,
-                                                                       context: store.projectContext(p.id),
-                                                                       learnedContext: store.learnedContext(p.id)))
-                _ = try await client.patchProject(p.id, PatchProjectRequest(name: p.name, context: store.projectContext(p.id)))
-                dirtyProjects.remove(id)
-            } catch { Log.hub.error("project push failed: \(error.localizedDescription)"); markOffline(error); return }
-        }
-        for id in dirtyMeetings {
-            guard let m = store.meeting(id) else { dirtyMeetings.remove(id); continue }
-            do {
-                try await push(m, client: client)
-                dirtyMeetings.remove(id)
-            } catch { Log.hub.error("push of “\(m.title)” failed: \(error.localizedDescription)"); markOffline(error); return }
-        }
-    }
-
-    private func push(_ m: Meeting, client: HubClient) async throws {
-        try await ensureProjectOnHub(m.projectID, client: client)
-        _ = try await client.createMeeting(CreateMeetingRequest(
-            id: m.id, projectID: m.projectID, title: m.title, titleIsAuto: m.titleIsAuto, startedAt: m.startedAt,
-            durationSeconds: m.durationSeconds, source: m.source, importedFileName: m.importedFileName))
-        _ = try await client.patchMeeting(m.id, PatchMeetingRequest(
-            title: m.titleIsAuto ? nil : m.title, titleIsAuto: m.titleIsAuto, projectID: m.projectID,
-            notes: store.notes(for: m), speakerNames: m.speakerNames, durationSeconds: m.durationSeconds,
-            events: m.events))
-        _ = try await client.replaceActionItems(m.id, m.actionItems)
     }
 
     // MARK: - Migration of what's already on this Mac
 
+    /// Copy meetings that were processed on this Mac — before there was a hub, or in local mode — to the hub,
+    /// results and all, so other devices can see them.
     func uploadExistingMeetings() {
         guard migration == nil, isEnabled, let client else { return }
         Task {
-            let meetings = store.meetings.filter { !processing.contains($0.id) }
+            let meetings = store.meetings.filter { !replica.uploading.contains($0.id) && !connection.engine.tracks(meeting: $0.id) }
             var n = 0
             for m in meetings {
                 n += 1
                 migration = "\(n) of \(meetings.count): \(m.title)"
                 do {
-                    try await push(m, client: client)
-                    let detail = try await client.meeting(m.id)
-                    let transcript = store.transcript(for: m)
-                    if detail.transcript.isEmpty, !transcript.isEmpty { _ = try await client.pushTranscript(m.id, transcript) }
-                    if detail.summaryMarkdown == nil, let md = store.summaryMarkdown(for: m) { _ = try await client.pushSummary(m.id, markdown: md) }
-                    let tracks = await prepareTracks(m)
-                    let already = detail.audio
-                    for (kind, url) in tracks {
-                        let sha = try await Task.detached { try HubClient.sha256(of: url) }.value
-                        if already.contains(where: { $0.kind == kind && $0.sha256 == sha }) { continue }
-                        migration = "\(n) of \(meetings.count): \(m.title) — uploading audio"
-                        _ = try await client.upload(m.id, kind: kind, file: url)
-                    }
-                    if m.status == .recorded || m.status == .failed, !tracks.isEmpty {
-                        process(m, steps: JobStep.allCases)
-                    }
+                    try await uploadWhole(m, client: client) { self.migration = "\(n) of \(meetings.count): \(m.title) — uploading audio" }
                 } catch {
                     migration = "Stopped at “\(m.title)”: \(error.localizedDescription)"
                     try? await Task.sleep(nanoseconds: 6_000_000_000)
@@ -586,9 +297,42 @@ final class HubSync: ObservableObject {
                     return
                 }
             }
+            await connection.sync()
             migration = "Done — \(meetings.count) meetings are on the hub"
             try? await Task.sleep(nanoseconds: 4_000_000_000)
             migration = nil
+        }
+    }
+
+    private func uploadWhole(_ m: Meeting, client: HubClient, uploadingAudio: () -> Void) async throws {
+        // Read everything before the first request. Once the hub has the meeting it starts arriving in syncs,
+        // and the hub's (still empty) copy would replace what is about to be sent.
+        let notes = store.notes(for: m)
+        let transcript = store.transcript(for: m)
+        let summary = store.summaryMarkdown(for: m)
+        let tracks = await prepareTracks(m)
+
+        connection.note(.project(m.projectID))
+        try await connection.push()
+        _ = try await client.createMeeting(CreateMeetingRequest(
+            id: m.id, projectID: m.projectID, title: m.title, titleIsAuto: m.titleIsAuto, startedAt: m.startedAt,
+            durationSeconds: m.durationSeconds, source: m.source, importedFileName: m.importedFileName))
+        _ = try await client.patchMeeting(m.id, PatchMeetingRequest(
+            title: m.titleIsAuto ? nil : m.title, titleIsAuto: m.titleIsAuto, notes: notes,
+            speakerNames: m.speakerNames, events: m.events))
+        _ = try await client.replaceActionItems(m.id, m.actionItems)
+
+        let detail = try await client.meeting(m.id)
+        if detail.transcript.isEmpty, !transcript.isEmpty { _ = try await client.pushTranscript(m.id, transcript) }
+        if detail.summaryMarkdown == nil, let summary { _ = try await client.pushSummary(m.id, markdown: summary) }
+        for (kind, url) in tracks {
+            let sha = try await Task.detached { try HubClient.sha256(of: url) }.value
+            if detail.audio.contains(where: { $0.kind == kind && $0.sha256 == sha }) { continue }
+            uploadingAudio()
+            _ = try await client.upload(m.id, kind: kind, file: url)
+        }
+        if m.status == .recorded || m.status == .failed, !tracks.isEmpty {
+            process(m, steps: JobStep.allCases)
         }
     }
 
@@ -607,15 +351,5 @@ final class HubSync: ObservableObject {
         var toTest = s
         toTest.userName = settings.userName
         return try await client.testSettings(toTest)
-    }
-
-    // MARK: - Persistence of unsent work
-
-    private func persist(_ key: String, _ ids: Set<UUID>) {
-        UserDefaults.standard.set(ids.map(\.uuidString), forKey: key)
-    }
-
-    private static func restore(_ key: String) -> Set<UUID> {
-        Set((UserDefaults.standard.stringArray(forKey: key) ?? []).compactMap(UUID.init(uuidString:)))
     }
 }

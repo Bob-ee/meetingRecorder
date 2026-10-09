@@ -123,10 +123,11 @@ private struct HubSection: View {
     @State private var testing = false
     @State private var testResult: TestResult?
     @State private var saveMessage: String?
+    @State private var pairingDevice = false
 
     var body: some View {
         Section("Hub") {
-            if hub.client == nil {
+            if !hub.isPaired {
                 Text("On the always-on machine, run the installer from the README, then paste the pairing code it prints (`meetinghub pair` prints another one any time).")
                     .font(.caption).foregroundStyle(.secondary)
                 TextField("mh1:host:port:token", text: $code)
@@ -150,6 +151,9 @@ private struct HubSection: View {
                 }
                 HStack {
                     Button("Reconnect") { Task { await hub.connect() } }
+                    Button("Pair iPhone or iPad…") { pairingDevice = true }
+                        .disabled(!hub.state.isConnected)
+                        .help("Shows a QR code to scan with the device's camera")
                     Button("Upload existing meetings") { hub.uploadExistingMeetings() }
                         .disabled(!hub.state.isConnected || hub.migration != nil)
                         .help("Copies the meetings already on this Mac to the hub so other devices can see them")
@@ -159,13 +163,14 @@ private struct HubSection: View {
                 if let migration = hub.migration {
                     Text(migration).font(.callout).foregroundStyle(.secondary)
                 }
-                if let lastPull = hub.lastPull {
-                    Text("Last sync \(lastPull.formatted(date: .omitted, time: .shortened))").font(.caption).foregroundStyle(.tertiary)
+                if let lastSync = hub.lastSync {
+                    Text("Last sync \(lastSync.formatted(date: .omitted, time: .shortened))").font(.caption).foregroundStyle(.tertiary)
                 }
             }
         }
+        .sheet(isPresented: $pairingDevice) { PairDeviceSheet() }
 
-        if hub.client != nil, hub.state.isConnected, let caps = hub.capabilities {
+        if hub.state.isConnected, let caps = hub.capabilities {
             Section("Summaries (on the hub)") {
                 if draft == nil {
                     ProgressView().controlSize(.small)

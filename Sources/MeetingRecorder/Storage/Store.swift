@@ -293,6 +293,10 @@ final class Store: ObservableObject {
     }
     func exists(_ url: URL?) -> Bool { url.map { fm.fileExists(atPath: $0.path) } ?? false }
 
+    func hasAudio(_ meeting: Meeting) -> Bool {
+        existingTrackURL("mic", for: meeting) != nil || remoteAudioURL(for: meeting) != nil
+    }
+
     /// Audio to treat as "everyone else" when transcribing.
     func remoteAudioURL(for meeting: Meeting) -> URL? {
         if let u = importedURL(for: meeting), exists(u) { return u }
