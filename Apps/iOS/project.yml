@@ -1,0 +1,111 @@
+# The iPhone/iPad app. The Xcode project is generated from this file — run scripts/ios-project.sh —
+# and is not checked in. All the code that isn't UI comes from the Swift package at the repo root.
+name: MeetingRecorder
+options:
+  bundleIdPrefix: local.meetingrecorder
+  deploymentTarget:
+    iOS: "18.0"
+  createIntermediateGroups: true
+packages:
+  MeetingRecorderPackage:
+    path: ../..
+targets:
+  # Not "MeetingRecorder": that is the Mac app's name in the package, and Xcode would take a target of the
+  # same name to mean it — and try to build the Mac app for iOS.
+  MeetingRecorderMobile:
+    type: application
+    platform: iOS
+    sources:
+      - MeetingRecorder
+    dependencies:
+      - package: MeetingRecorderPackage
+        product: MeetingCore
+      - package: MeetingRecorderPackage
+        product: MeetingSync
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: local.meetingrecorder.ios
+        DEVELOPMENT_TEAM: 636DTAU5K7
+        CODE_SIGN_STYLE: Automatic
+        SWIFT_VERSION: "5.0"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        MARKETING_VERSION: 0.1.0
+        CURRENT_PROJECT_VERSION: 1
+    info:
+      path: Info.plist
+      properties:
+        CFBundleDisplayName: Meeting Recorder
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        LSApplicationCategoryType: public.app-category.productivity
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        # Recording carries on with the screen locked.
+        UIBackgroundModes:
+          - audio
+        NSMicrophoneUsageDescription: Meeting Recorder records your microphone during meetings so the conversation can be transcribed.
+        NSCameraUsageDescription: Meeting Recorder uses the camera to scan the pairing code shown by your hub or your Mac.
+        NSCalendarsWriteOnlyAccessUsageDescription: Meeting Recorder adds follow-up meetings and action-item deadlines from your notes to your calendar when you ask it to.
+        NSCalendarsFullAccessUsageDescription: Meeting Recorder adds follow-up meetings and action-item deadlines from your notes to your calendar when you ask it to.
+        NSRemindersFullAccessUsageDescription: Meeting Recorder adds action items to Reminders when you ask it to.
+        # meetingrecorder://pair?code=… — what a pairing QR code holds.
+        CFBundleURLTypes:
+          - CFBundleURLName: local.meetingrecorder.ios
+            CFBundleURLSchemes:
+              - meetingrecorder
+        # Makes the app a destination in the share sheet for recordings (Voice Memos, Files, AirDrop).
+        # They arrive as a copy, so the original stays where it was.
+        LSSupportsOpeningDocumentsInPlace: false
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: Audio recording
+            CFBundleTypeRole: Viewer
+            LSHandlerRank: Alternate
+            LSItemContentTypes:
+              - public.audio
+              - com.apple.m4a-audio
+              - public.mp3
+              - public.mpeg-4
+              - com.microsoft.waveform-audio
+        # The hub speaks plain HTTP, and is only ever reached inside the Tailscale tunnel, which is what
+        # encrypts it. So HTTP is allowed to tailnet names (*.ts.net) and bare addresses, and nowhere else.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+          NSExceptionDomains:
+            ts.net:
+              NSIncludesSubdomains: true
+              NSExceptionAllowsInsecureHTTPLoads: true
+  # Drives the real app against a hub: pair, browse, edit. Skipped unless a pairing code is supplied —
+  # see MeetingRecorderUITests/SmokeTests.swift.
+  MeetingRecorderUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - MeetingRecorderUITests
+    dependencies:
+      - target: MeetingRecorderMobile
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: local.meetingrecorder.ios.uitests
+        DEVELOPMENT_TEAM: 636DTAU5K7
+        CODE_SIGN_STYLE: Automatic
+        SWIFT_VERSION: "5.0"
+        GENERATE_INFOPLIST_FILE: YES
+schemes:
+  MeetingRecorderMobile:
+    build:
+      targets:
+        MeetingRecorderMobile: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - MeetingRecorderUITests
