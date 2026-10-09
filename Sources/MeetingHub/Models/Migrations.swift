@@ -133,9 +133,11 @@ struct CreateSchemaV1: AsyncMigration {
 /// SQLite has no `ADD COLUMN IF NOT EXISTS`, and a migration that adds several columns is not atomic there: if it
 /// fails partway, nothing is recorded and every later startup dies on the columns that did land. Adding them one
 /// at a time and shrugging off duplicates makes these migrations able to finish what an earlier attempt started.
-func addColumn(_ db: Database, _ schema: String, _ name: String, _ type: DatabaseSchema.DataType) async throws {
+func addColumn(_ db: Database, _ schema: String, _ name: String, _ type: DatabaseSchema.DataType,
+               _ constraints: DatabaseSchema.FieldConstraint...) async throws {
     do {
-        try await db.schema(schema).field(FieldKey(stringLiteral: name), type).update()
+        try await db.schema(schema).field(.definition(name: .key(FieldKey(stringLiteral: name)), dataType: type,
+                                                      constraints: constraints)).update()
     } catch {
         let text = String(describing: error).lowercased()
         guard text.contains("duplicate column") || text.contains("already exists") else { throw error }
@@ -172,5 +174,38 @@ struct AddProjectContextFieldsV3: AsyncMigration {
         try await db.schema(ActionItemModel.schema)
             .deleteField("source_quote").deleteField("guidance").deleteField("guidance_at")
             .deleteField("last_discussed_meeting_id").update()
+    }
+}
+
+/// The change feed: a revision counter per workspace, the revision each project and meeting was last written
+/// at, and tombstones for what was deleted.
+///
+/// Rows that already exist start at revision 1, and so does the counter — a device syncing from 0 gets all of them.
+struct AddChangeFeedV4: AsyncMigration {
+    func prepare(on db: Database) async throws {
+        for schema in [WorkspaceModel.schema, ProjectModel.schema, MeetingModel.schema] {
+            try await addColumn(db, schema, "revision", .int64, .required, .sql(.default(1)))
+        }
+        do {
+            try await db.schema(TombstoneModel.schema)
+                .id()
+                .field("workspace_id", .uuid, .required, .references(WorkspaceModel.schema, "id", onDelete: .cascade))
+                .field("kind", .string, .required)
+                .field("entity_id", .uuid, .required)
+                .field("revision", .int64, .required)
+                .field("created_at", .datetime)
+                .unique(on: "workspace_id", "kind", "entity_id")
+                .create()
+        } catch {
+            // Same reasoning as `addColumn`: a rerun after a partial attempt must be able to finish.
+            guard String(describing: error).lowercased().contains("already exists") else { throw error }
+        }
+    }
+
+    func revert(on db: Database) async throws {
+        try await db.schema(TombstoneModel.schema).delete()
+        for schema in [WorkspaceModel.schema, ProjectModel.schema, MeetingModel.schema] {
+            try await db.schema(schema).deleteField("revision").update()
+        }
     }
 }

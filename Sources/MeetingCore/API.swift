@@ -2,11 +2,16 @@ import Foundation
 
 /// Wire types shared by the hub and every client. Bump `HubAPI.version` when a change isn't backward compatible.
 public enum HubAPI {
-    public static let version = 1
+    /// 2 added the change feed (`/changes`, `/meetings/:id/edits`) that clients now sync through.
+    public static let version = 2
     public static let prefix = "/api/v1"
     public static let tokenHeader = "Authorization"
     public static let checksumHeader = "X-Content-SHA256"
     public static let fileNameHeader = "X-File-Name"
+    /// On an audio upload: a base64 `CreateMeetingRequest`, so the meeting is created if the hub hasn't seen it.
+    public static let meetingHeader = "X-Meeting"
+    /// On an audio upload: the steps to queue once the file is stored, comma separated (`transcribe,summarize`).
+    public static let processHeader = "X-Process"
 }
 
 public struct HubInfo: Codable, Sendable {
@@ -205,6 +210,104 @@ public struct PushSummaryRequest: Codable, Sendable {
     public init(markdown: String, provider: String? = nil) { self.markdown = markdown; self.provider = provider }
 }
 
+// MARK: Sync
+
+/// A meeting as devices edit and sync it: the meeting, the user's notes, and a tag that says whether the
+/// transcript and summary a device has cached are still the current ones.
+public struct MeetingRecord: Codable, Sendable, Equatable, Identifiable {
+    public var meeting: Meeting
+    public var notes: String
+    /// Changes whenever the transcript or summary is rewritten; nil until there is either.
+    public var contentTag: String?
+    public var id: UUID { meeting.id }
+
+    public init(meeting: Meeting, notes: String = "", contentTag: String? = nil) {
+        self.meeting = meeting; self.notes = notes; self.contentTag = contentTag
+    }
+}
+
+/// Everything one device changed about a meeting since it last heard from the hub, sent as one request and
+/// applied as one write — so the reply is the meeting exactly as the hub holds it after this device's changes.
+/// A nil field, or an empty list, means "unchanged".
+public struct MeetingEdit: Codable, Sendable, Equatable {
+    public var title: String?
+    public var titleIsAuto: Bool?
+    public var projectID: UUID?
+    public var notes: String?
+    /// The speakers this device renamed, each with its new name; an empty name puts the default label back.
+    /// Speakers it didn't touch are left out, so two devices naming different speakers don't undo each other.
+    public var speakerNames: [String: String]?
+    /// Items this device created. Sent again after a lost reply, they update the copy that did arrive.
+    public var addedItems: [ActionItem]
+    /// Items this device edited. One that has since been removed on the hub stays removed.
+    public var changedItems: [ActionItem]
+    public var removedItems: [UUID]
+    /// Suggested events whose "in calendar" or "dismissed" state this device changed.
+    public var changedEvents: [MeetingEvent]
+
+    public init(title: String? = nil, titleIsAuto: Bool? = nil, projectID: UUID? = nil, notes: String? = nil,
+                speakerNames: [String: String]? = nil, addedItems: [ActionItem] = [], changedItems: [ActionItem] = [],
+                removedItems: [UUID] = [], changedEvents: [MeetingEvent] = []) {
+        self.title = title; self.titleIsAuto = titleIsAuto; self.projectID = projectID; self.notes = notes
+        self.speakerNames = speakerNames; self.addedItems = addedItems; self.changedItems = changedItems
+        self.removedItems = removedItems; self.changedEvents = changedEvents
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        title = try c.decodeIfPresent(String.self, forKey: .title)
+        titleIsAuto = try c.decodeIfPresent(Bool.self, forKey: .titleIsAuto)
+        projectID = try c.decodeIfPresent(UUID.self, forKey: .projectID)
+        notes = try c.decodeIfPresent(String.self, forKey: .notes)
+        speakerNames = try c.decodeIfPresent([String: String].self, forKey: .speakerNames)
+        addedItems = try c.decodeIfPresent([ActionItem].self, forKey: .addedItems) ?? []
+        changedItems = try c.decodeIfPresent([ActionItem].self, forKey: .changedItems) ?? []
+        removedItems = try c.decodeIfPresent([UUID].self, forKey: .removedItems) ?? []
+        changedEvents = try c.decodeIfPresent([MeetingEvent].self, forKey: .changedEvents) ?? []
+    }
+
+    public var isEmpty: Bool { self == MeetingEdit() }
+}
+
+/// Something that was deleted. Kept by the hub so a device that was away when it happened still finds out,
+/// and so the hub can refuse to bring it back.
+public struct Tombstone: Codable, Sendable, Hashable {
+    public enum Kind: String, Codable, Sendable { case project, meeting }
+    public var kind: Kind
+    public var id: UUID
+    public init(kind: Kind, id: UUID) { self.kind = kind; self.id = id }
+}
+
+/// What changed in a workspace after a given revision. Every write on the hub takes the workspace's next
+/// revision, so "everything after N" is exact — it doesn't depend on any device's clock.
+public struct ChangeSet: Codable, Sendable {
+    /// Pass this back as `since` next time.
+    public var revision: Int64
+    public var projects: [ProjectDetail]
+    public var meetings: [MeetingRecord]
+    public var removed: [Tombstone]
+    /// There was more than one page; ask again from `revision`.
+    public var hasMore: Bool
+
+    public init(revision: Int64, projects: [ProjectDetail] = [], meetings: [MeetingRecord] = [],
+                removed: [Tombstone] = [], hasMore: Bool = false) {
+        self.revision = revision; self.projects = projects; self.meetings = meetings
+        self.removed = removed; self.hasMore = hasMore
+    }
+}
+
+/// A request for a pairing code for one more device, made from a device that is already paired.
+public struct PairDeviceRequest: Codable, Sendable {
+    public var name: String
+    public init(name: String) { self.name = name }
+}
+
+public struct PairDeviceResponse: Codable, Sendable {
+    /// `mh1:<host>:<port>:<token>` — shown once; only its hash is kept.
+    public var pairingCode: String
+    public init(pairingCode: String) { self.pairingCode = pairingCode }
+}
+
 // MARK: Jobs
 
 public enum JobStatus: String, Codable, Sendable { case queued, running, done, failed }
@@ -298,6 +401,25 @@ public struct PairingCode: Sendable, Equatable {
     public var string: String { "\(tls ? "mh1s" : "mh1"):\(host):\(port):\(token)" }
 
     public var baseURL: URL? { URL(string: "\(tls ? "https" : "http")://\(host):\(port)") }
+
+    /// The code as a link the apps open (`meetingrecorder://pair?code=…`), which is what a pairing QR holds —
+    /// so pointing a phone's camera at it is the whole of pairing.
+    public var url: URL? {
+        var components = URLComponents()
+        components.scheme = PairingCode.urlScheme
+        components.host = "pair"
+        components.queryItems = [URLQueryItem(name: "code", value: string)]
+        return components.url
+    }
+
+    public init?(url: URL) {
+        guard url.scheme == PairingCode.urlScheme, url.host == "pair",
+              let code = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+                .queryItems?.first(where: { $0.name == "code" })?.value else { return nil }
+        self.init(parsing: code)
+    }
+
+    public static let urlScheme = "meetingrecorder"
 
     public init?(parsing raw: String) {
         let s = raw.trimmingCharacters(in: .whitespacesAndNewlines)

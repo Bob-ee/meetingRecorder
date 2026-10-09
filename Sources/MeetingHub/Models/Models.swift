@@ -22,9 +22,13 @@ final class WorkspaceModel: Model, @unchecked Sendable {
     @Field(key: "name") var name: String
     @Parent(key: "owner_id") var owner: UserModel
     @Field(key: "plan") var plan: String
+    /// The revision of the newest write in this workspace. See `ChangeFeed`.
+    @Field(key: "revision") var revision: Int64
     @Timestamp(key: "created_at", on: .create) var createdAt: Date?
     init() {}
-    init(name: String, ownerID: UUID, plan: String = "self-hosted") { self.name = name; self.$owner.id = ownerID; self.plan = plan }
+    init(name: String, ownerID: UUID, plan: String = "self-hosted") {
+        self.name = name; self.$owner.id = ownerID; self.plan = plan; self.revision = 0
+    }
 
     var dto: HubWorkspace { HubWorkspace(id: id ?? UUID(), name: name) }
 }
@@ -63,6 +67,7 @@ final class ProjectModel: Model, @unchecked Sendable {
     @Field(key: "context") var context: String
     /// What the summarizer has worked out about this project by itself. Null until it writes one.
     @OptionalField(key: "learned_context") var learnedContextRaw: String?
+    @Field(key: "revision") var revision: Int64
     @Timestamp(key: "created_at", on: .create) var createdAt: Date?
     @Timestamp(key: "updated_at", on: .update) var updatedAt: Date?
     @Children(for: \.$project) var meetings: [MeetingModel]
@@ -96,6 +101,7 @@ final class MeetingModel: Model, @unchecked Sendable {
     @Field(key: "notes") var notes: String
     /// Suggested calendar events, as JSON (nil on rows from before they existed).
     @OptionalField(key: "events") var eventsJSON: String?
+    @Field(key: "revision") var revision: Int64
     @Timestamp(key: "created_at", on: .create) var createdAt: Date?
     @Timestamp(key: "updated_at", on: .update) var updatedAt: Date?
     @Children(for: \.$meeting) var actionItems: [ActionItemModel]
@@ -239,6 +245,24 @@ final class JobModel: Model, @unchecked Sendable {
         JobInfo(id: id ?? UUID(), meetingID: $meeting.id, steps: steps, status: jobStatus, progress: progress, error: error,
                 createdAt: createdAt ?? Date(), startedAt: startedAt, finishedAt: finishedAt)
     }
+}
+
+/// What is left of a deleted project or meeting: enough to tell every device it is gone, and to refuse a
+/// stale device that tries to create it again.
+final class TombstoneModel: Model, @unchecked Sendable {
+    static let schema = "tombstones"
+    @ID(key: .id) var id: UUID?
+    @Parent(key: "workspace_id") var workspace: WorkspaceModel
+    @Field(key: "kind") var kind: String
+    @Field(key: "entity_id") var entityID: UUID
+    @Field(key: "revision") var revision: Int64
+    @Timestamp(key: "created_at", on: .create) var createdAt: Date?
+    init() {}
+    init(workspaceID: UUID, kind: Tombstone.Kind, entityID: UUID, revision: Int64) {
+        $workspace.id = workspaceID; self.kind = kind.rawValue; self.entityID = entityID; self.revision = revision
+    }
+
+    var dto: Tombstone? { Tombstone.Kind(rawValue: kind).map { Tombstone(kind: $0, id: entityID) } }
 }
 
 final class SettingModel: Model, @unchecked Sendable {

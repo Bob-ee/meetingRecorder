@@ -3,7 +3,7 @@ import MeetingCore
 import Vapor
 
 enum HubVersion {
-    static let string = "0.1.0"
+    static let string = "0.2.0"
 }
 
 /// `config.json` in the data directory. Everything else is in the database.

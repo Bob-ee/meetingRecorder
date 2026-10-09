@@ -27,6 +27,11 @@ extension HubSettings: Content {}
 extension Capabilities: Content {}
 extension TestResult: Content {}
 extension PushSummaryRequest: Content {}
+extension MeetingRecord: Content {}
+extension MeetingEdit: Content {}
+extension ChangeSet: Content {}
+extension PairDeviceRequest: Content {}
+extension PairDeviceResponse: Content {}
 
 func routes(_ app: Application) throws {
     let api = app.grouped("api", "v1")
@@ -55,6 +60,7 @@ func routes(_ app: Application) throws {
     uploadRoutes(auth)
     settingsRoutes(auth)
     eventRoutes(auth)
+    syncRoutes(auth)
 }
 
 // MARK: - Shared lookups
@@ -117,14 +123,69 @@ enum HubQueries {
         return (ActionItems.openProjectItems(in: dtos, excluding: meetingID), byID)
     }
 
-    /// Mark a meeting as changed, even when none of its own columns did.
-    ///
-    /// Fluent skips the UPDATE entirely for a model with no dirty fields, so saving a meeting purely to bump its
-    /// `updated_at` after editing one of its action items is a no-op — and clients, which pull by "what changed
-    /// since", never find out. Setting the timestamp by hand makes the row dirty so the write actually happens.
+    /// Mark a meeting as changed, even when none of its own columns did — after editing one of its action
+    /// items, say. Saving is enough: `RevisionMiddleware` gives every save a new revision, which is what puts
+    /// the meeting in front of every device's next sync.
     static func touch(_ meeting: MeetingModel, on db: Database) async throws {
-        meeting.updatedAt = Date()
         try await meeting.save(on: db)
+    }
+
+    /// Create a meeting, or return the one that already has this id — clients choose the id, so a retry after
+    /// a lost reply is harmless. A meeting that was deleted stays deleted.
+    static func createMeeting(_ req: Request, _ body: CreateMeetingRequest) async throws -> MeetingModel {
+        let p = try req.principal
+        if let id = body.id {
+            if let existing = try await MeetingModel.query(on: req.db).filter(\.$id == id)
+                .filter(\.$workspace.$id == p.workspaceID).with(\.$actionItems).with(\.$project).first() {
+                return existing
+            }
+            if try await ChangeFeed.isBuried(.meeting, id, workspaceID: p.workspaceID, on: req.db) {
+                throw Abort(.gone, reason: "this meeting was deleted")
+            }
+        }
+        let project = try await HubQueries.project(req, id: body.projectID)
+        let m = MeetingModel()
+        m.id = body.id ?? UUID()
+        m.$workspace.id = p.workspaceID
+        m.$project.id = project.id!
+        m.title = body.title.trimmingCharacters(in: .whitespaces).isEmpty ? "Meeting" : body.title
+        m.titleIsAuto = body.titleIsAuto
+        m.startedAt = body.startedAt
+        m.durationSeconds = body.durationSeconds
+        m.meetingStatus = .recorded
+        m.source = body.source.rawValue
+        m.importedFileName = body.importedFileName
+        m.speakerNamesJSON = "{}"
+        m.notes = ""
+        try await m.save(on: req.db)
+        req.application.eventBus.post(HubEvent(kind: .meetingUpdated, meetingID: m.id, projectID: project.id))
+        return try await HubQueries.meeting(req, id: m.id!)
+    }
+
+    /// Queue transcription and/or summarization. Returns the job already waiting, if there is one.
+    static func enqueue(_ req: Request, _ meeting: MeetingModel, steps: [JobStep]) async throws -> JobModel {
+        let p = try req.principal
+        if let pending = try await JobModel.query(on: req.db).filter(\.$meeting.$id == meeting.id!)
+            .filter(\.$status ~~ [JobStatus.queued.rawValue, JobStatus.running.rawValue]).first() {
+            return pending
+        }
+        if steps.contains(.transcribe) {
+            let files = try await AudioFileModel.query(on: req.db).filter(\.$meeting.$id == meeting.id!).count()
+            guard files > 0 else { throw Abort(.badRequest, reason: "upload audio before processing") }
+        } else {
+            let transcripts = try await TranscriptModel.query(on: req.db).filter(\.$meeting.$id == meeting.id!).count()
+            guard transcripts > 0 else { throw Abort(.badRequest, reason: "there is no transcript to summarize") }
+        }
+        let job = JobModel(workspaceID: p.workspaceID, meetingID: meeting.id!, userID: p.userID, steps: steps)
+        try await job.save(on: req.db)
+        meeting.meetingStatus = .queued
+        meeting.errorMessage = nil
+        try await meeting.save(on: req.db)
+        req.application.eventBus.post(HubEvent(kind: .meetingUpdated, meetingID: meeting.id, projectID: meeting.$project.id))
+        req.application.eventBus.post(HubEvent(kind: .jobUpdated, meetingID: meeting.id, job: job.dto))
+        let runner = req.application.jobRunner
+        Task { await runner.poke() }
+        return job
     }
 
     static func broadcastMeeting(_ req: Request, _ meeting: MeetingModel) {
@@ -158,9 +219,13 @@ func projectRoutes(_ r: RoutesBuilder) {
         let body = try req.content.decode(CreateProjectRequest.self)
         let name = body.name.trimmingCharacters(in: .whitespaces)
         guard !name.isEmpty else { throw Abort(.badRequest, reason: "project name is empty") }
-        if let id = body.id, let existing = try await ProjectModel.query(on: req.db).filter(\.$id == id).filter(\.$workspace.$id == p.workspaceID).first() {
-            return ProjectDetail(project: existing.dto, context: existing.context,
-                                 learnedContext: existing.learnedContext, meetingCount: 0)
+        if let id = body.id {
+            if let existing = try await ProjectModel.query(on: req.db).filter(\.$id == id).filter(\.$workspace.$id == p.workspaceID).first() {
+                return try await ChangeFeed.detail(existing, on: req.db)
+            }
+            if try await ChangeFeed.isBuried(.project, id, workspaceID: p.workspaceID, on: req.db) {
+                throw Abort(.gone, reason: "this project was deleted")
+            }
         }
         let project = ProjectModel(id: body.id, workspaceID: p.workspaceID, name: name, context: body.context ?? "")
         project.learnedContext = body.learnedContext ?? ""
@@ -241,10 +306,15 @@ func projectRoutes(_ r: RoutesBuilder) {
         let p = try req.principal
         let project = try await HubQueries.project(req, id: HubQueries.uuid(req, "id"))
         let meetings = try await MeetingModel.query(on: req.db).filter(\.$project.$id == project.id!).all()
+        // Deleted one by one rather than left to the foreign key's cascade, so each leaves its own tombstone.
+        try await req.db.transaction { tx in
+            for m in meetings { try await m.delete(on: tx) }
+            try await project.delete(on: tx)
+        }
         for m in meetings {
             try? FileManager.default.removeItem(at: req.application.hubPaths.audioDir(workspace: p.workspaceID, meeting: m.id!))
+            req.application.eventBus.post(HubEvent(kind: .meetingDeleted, meetingID: m.id, projectID: project.id))
         }
-        try await project.delete(on: req.db)
         let dir = ExportMirror(root: req.application.hubPaths.export).projectDir(workspace: p.workspace.name, project: project.name)
         try? FileManager.default.removeItem(at: dir)
         req.application.eventBus.post(HubEvent(kind: .projectDeleted, projectID: project.id))
@@ -265,28 +335,7 @@ func meetingRoutes(_ r: RoutesBuilder) {
     }
 
     r.post("meetings") { req -> Meeting in
-        let p = try req.principal
-        let body = try req.content.decode(CreateMeetingRequest.self)
-        let project = try await HubQueries.project(req, id: body.projectID)
-        if let id = body.id, let existing = try await MeetingModel.query(on: req.db).filter(\.$id == id).filter(\.$workspace.$id == p.workspaceID).with(\.$actionItems).first() {
-            return existing.dto()
-        }
-        let m = MeetingModel()
-        m.id = body.id ?? UUID()
-        m.$workspace.id = p.workspaceID
-        m.$project.id = project.id!
-        m.title = body.title.trimmingCharacters(in: .whitespaces).isEmpty ? "Meeting" : body.title
-        m.titleIsAuto = body.titleIsAuto
-        m.startedAt = body.startedAt
-        m.durationSeconds = body.durationSeconds
-        m.meetingStatus = .recorded
-        m.source = body.source.rawValue
-        m.importedFileName = body.importedFileName
-        m.speakerNamesJSON = "{}"
-        m.notes = ""
-        try await m.save(on: req.db)
-        req.application.eventBus.post(HubEvent(kind: .meetingUpdated, meetingID: m.id, projectID: project.id))
-        return m.dto(actionItems: [])
+        try await HubQueries.createMeeting(req, try req.content.decode(CreateMeetingRequest.self)).dto()
     }
 
     r.get("meetings", ":id") { req -> MeetingDetail in
@@ -334,30 +383,9 @@ func meetingRoutes(_ r: RoutesBuilder) {
 
     /// Queue transcription and/or summarization. Idempotent while a job is already pending.
     r.post("meetings", ":id", "process") { req -> JobInfo in
-        let p = try req.principal
         let meeting = try await HubQueries.meeting(req, id: HubQueries.uuid(req, "id"))
         let steps = (try? req.content.decode(ProcessRequest.self).steps).flatMap { $0.isEmpty ? nil : $0 } ?? JobStep.allCases
-        if let pending = try await JobModel.query(on: req.db).filter(\.$meeting.$id == meeting.id!)
-            .filter(\.$status ~~ [JobStatus.queued.rawValue, JobStatus.running.rawValue]).first() {
-            return pending.dto
-        }
-        if steps.contains(.transcribe) {
-            let files = try await AudioFileModel.query(on: req.db).filter(\.$meeting.$id == meeting.id!).count()
-            guard files > 0 else { throw Abort(.badRequest, reason: "upload audio before processing") }
-        } else {
-            let transcripts = try await TranscriptModel.query(on: req.db).filter(\.$meeting.$id == meeting.id!).count()
-            guard transcripts > 0 else { throw Abort(.badRequest, reason: "there is no transcript to summarize") }
-        }
-        let job = JobModel(workspaceID: p.workspaceID, meetingID: meeting.id!, userID: p.userID, steps: steps)
-        try await job.save(on: req.db)
-        meeting.meetingStatus = .queued
-        meeting.errorMessage = nil
-        try await HubQueries.touch(meeting, on: req.db)
-        req.application.eventBus.post(HubEvent(kind: .meetingUpdated, meetingID: meeting.id, projectID: meeting.$project.id))
-        req.application.eventBus.post(HubEvent(kind: .jobUpdated, meetingID: meeting.id, job: job.dto))
-        let runner = req.application.jobRunner
-        Task { await runner.poke() }
-        return job.dto
+        return try await HubQueries.enqueue(req, meeting, steps: steps).dto
     }
 
     r.get("meetings", ":id", "job") { req -> JobInfo in

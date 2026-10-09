@@ -16,6 +16,9 @@ func configure(_ app: Application) async throws {
     app.migrations.add(CreateSchemaV1())
     app.migrations.add(AddCalendarFieldsV2())
     app.migrations.add(AddProjectContextFieldsV3())
+    app.migrations.add(AddChangeFeedV4())
+    app.databases.middleware.use(RevisionMiddleware<ProjectModel>(), on: .sqlite)
+    app.databases.middleware.use(RevisionMiddleware<MeetingModel>(), on: .sqlite)
     try await app.autoMigrate()
 
     ContentConfiguration.global.use(encoder: wireEncoder, for: .json)
