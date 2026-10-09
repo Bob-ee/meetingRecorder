@@ -51,8 +51,8 @@ microphone and asks whether to record.
 
 The app can hand all processing — transcription, speaker identification, summarization — to a **hub**: a small
 server you run on an always-on Mac (a Mac mini, an old MacBook with the lid closed) so your laptop can go offline
-or to sleep the moment a call ends. The hub also holds the database, so phones and other computers can read and
-edit the same meetings. See [docs/architecture.md](docs/architecture.md).
+or to sleep the moment a call ends. The hub also holds the database, so your phone, tablet and other computers
+read and edit the same meetings, and an edit or a delete made on one reaches the rest. See [docs/architecture.md](docs/architecture.md).
 
 **Install the hub** on the always-on machine (Command Line Tools / Swift required):
 
@@ -84,6 +84,25 @@ tail -f ~/MeetingHub/logs/hub.log
 
 Everything the hub knows is also written as plain Markdown/JSON under `~/MeetingHub/export/`, in the same layout
 the app uses locally.
+
+## iPhone and iPad
+
+The iOS app (`Apps/iOS`) records in-person meetings with the microphone, takes recordings shared into it from
+Voice Memos or Files, and shows everything the hub holds — summaries, transcripts, action items, notes — kept in
+sync with the Mac and with every other device. It needs a hub; the phone does no processing of its own.
+
+```sh
+brew install xcodegen
+scripts/ios-project.sh     # generates Apps/iOS/MeetingRecorder.xcodeproj
+open Apps/iOS/MeetingRecorder.xcodeproj
+```
+
+Pick your team under Signing & Capabilities, choose your device and Run. Then, with the device on your tailnet
+(the Tailscale app, connected): in the Mac app open **Settings → Hub → Pair iPhone or iPad…** and point the
+device's camera at the QR code. Each device gets its own token, which `meetinghub tokens --revoke NAME` revokes.
+
+iOS can't capture another app's audio, so calls are still recorded on the Mac — or recorded however you like and
+shared into the app.
 
 ## Bringing in recordings from elsewhere
 
