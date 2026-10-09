@@ -1,16 +1,18 @@
 // swift-tools-version: 6.0
 import PackageDescription
 
-// One package, four targets:
+// One package, five targets:
 //   MeetingCore     pure Swift — models, prompts, Markdown, provider protocols. Shared by every client and the hub.
+//   MeetingSync     the hub client and the sync engine. Shared by the Mac app and the iOS app (Apps/iOS).
 //   MeetingEngine   the processing stack — on-device transcription (FluidAudio, Apple platforms), summarizers.
 //   MeetingRecorder the macOS app (capture + client).
 //   meetinghub      the self-hosted server that does the processing and holds the data.
 let package = Package(
     name: "MeetingRecorder",
-    platforms: [.macOS(.v15)],
+    platforms: [.macOS(.v15), .iOS(.v18)],
     products: [
         .library(name: "MeetingCore", targets: ["MeetingCore"]),
+        .library(name: "MeetingSync", targets: ["MeetingSync"]),
         .library(name: "MeetingEngine", targets: ["MeetingEngine"]),
         .executable(name: "MeetingRecorder", targets: ["MeetingRecorder"]),
         .executable(name: "meetinghub", targets: ["MeetingHub"]),
@@ -28,6 +30,11 @@ let package = Package(
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
         .target(
+            name: "MeetingSync",
+            dependencies: ["MeetingCore"],
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
+        .target(
             name: "MeetingEngine",
             dependencies: [
                 "MeetingCore",
@@ -37,7 +44,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "MeetingRecorder",
-            dependencies: ["MeetingCore", "MeetingEngine"],
+            dependencies: ["MeetingCore", "MeetingSync", "MeetingEngine"],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
         .executableTarget(
@@ -50,6 +57,11 @@ let package = Package(
                 .product(name: "FluentSQLiteDriver", package: "fluent-sqlite-driver"),
                 .product(name: "Crypto", package: "swift-crypto"),
             ],
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
+        .testTarget(
+            name: "MeetingSyncTests",
+            dependencies: ["MeetingCore", "MeetingSync", "MeetingHub"],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
     ]

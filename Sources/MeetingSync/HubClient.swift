@@ -2,12 +2,12 @@ import Foundation
 import CryptoKit
 import MeetingCore
 
-enum HubClientError: LocalizedError {
+public enum HubClientError: LocalizedError {
     case badURL
     case http(Int, String)
     case notPaired
 
-    var errorDescription: String? {
+    public var errorDescription: String? {
         switch self {
         case .badURL: return "The pairing code doesn't contain a valid address"
         case .http(let code, let reason): return "Hub replied \(code): \(reason)"
@@ -15,16 +15,21 @@ enum HubClientError: LocalizedError {
         }
     }
 
-    var isUnauthorized: Bool { if case .http(401, _) = self { return true } else { return false } }
+    public var status: Int? { if case .http(let code, _) = self { return code } else { return nil } }
+    public var isUnauthorized: Bool { status == 401 }
+    /// The hub has nothing by that id — it was never there, or it has been deleted.
+    public var isNotFound: Bool { status == 404 }
+    /// It was deleted on the hub, which will not take it back.
+    public var isGone: Bool { status == 410 }
 }
 
 /// Thin async client for the hub API. One instance per (baseURL, token).
-struct HubClient: Sendable {
-    let baseURL: URL
-    let token: String
+public struct HubClient: Sendable {
+    public let baseURL: URL
+    public let token: String
     private let session: URLSession
 
-    init(baseURL: URL, token: String) {
+    public init(baseURL: URL, token: String) {
         self.baseURL = baseURL
         self.token = token
         let config = URLSessionConfiguration.default
@@ -34,7 +39,7 @@ struct HubClient: Sendable {
         session = URLSession(configuration: config)
     }
 
-    init?(pairingCode: String) {
+    public init?(pairingCode: String) {
         guard let code = PairingCode(parsing: pairingCode), let url = code.baseURL else { return nil }
         self.init(baseURL: url, token: code.token)
     }
@@ -60,11 +65,7 @@ struct HubClient: Sendable {
 
     private func check(_ data: Data, _ response: URLResponse) throws {
         guard let http = response as? HTTPURLResponse else { return }
-        guard (200..<300).contains(http.statusCode) else {
-            var reason = String(decoding: data.prefix(300), as: UTF8.self)
-            if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any], let r = obj["reason"] as? String { reason = r }
-            throw HubClientError.http(http.statusCode, reason)
-        }
+        if let error = Self.error(status: http.statusCode, body: data) { throw error }
     }
 
     private func send<T: Decodable>(_ method: String, _ path: String, query: [String: String] = [:],
@@ -83,41 +84,56 @@ struct HubClient: Sendable {
 
     // MARK: Endpoints
 
-    func health() async throws -> HubInfo { try await send("GET", "health") }
-    func me() async throws -> WhoAmI { try await send("GET", "me") }
-    func capabilities() async throws -> Capabilities { try await send("GET", "capabilities") }
+    public func health() async throws -> HubInfo { try await send("GET", "health") }
+    public func me() async throws -> WhoAmI { try await send("GET", "me") }
+    public func capabilities() async throws -> Capabilities { try await send("GET", "capabilities") }
 
-    func projects() async throws -> [ProjectDetail] { try await send("GET", "projects") }
-    func createProject(_ r: CreateProjectRequest) async throws -> ProjectDetail { try await send("POST", "projects", body: r) }
-    func patchProject(_ id: UUID, _ r: PatchProjectRequest) async throws -> ProjectDetail { try await send("PATCH", "projects/\(id.uuidString)", body: r) }
-    func deleteProject(_ id: UUID) async throws { try await sendNoContent("DELETE", "projects/\(id.uuidString)") }
-    func refreshProjectContext(_ id: UUID) async throws -> ProjectDetail {
+    public func projects() async throws -> [ProjectDetail] { try await send("GET", "projects") }
+    public func createProject(_ r: CreateProjectRequest) async throws -> ProjectDetail { try await send("POST", "projects", body: r) }
+    public func patchProject(_ id: UUID, _ r: PatchProjectRequest) async throws -> ProjectDetail { try await send("PATCH", "projects/\(id.uuidString)", body: r) }
+    public func deleteProject(_ id: UUID) async throws { try await sendNoContent("DELETE", "projects/\(id.uuidString)") }
+    public func refreshProjectContext(_ id: UUID) async throws -> ProjectDetail {
         try await send("POST", "projects/\(id.uuidString)/context/refresh")
     }
 
-    func meetings(project: UUID? = nil, since: Date? = nil) async throws -> [Meeting] {
+    public func meetings(project: UUID? = nil, since: Date? = nil) async throws -> [Meeting] {
         var q: [String: String] = [:]
         if let project { q["project"] = project.uuidString }
         if let since { q["since"] = ISO8601DateFormatter().string(from: since) }
         return try await send("GET", "meetings", query: q)
     }
-    func createMeeting(_ r: CreateMeetingRequest) async throws -> Meeting { try await send("POST", "meetings", body: r) }
-    func meeting(_ id: UUID) async throws -> MeetingDetail { try await send("GET", "meetings/\(id.uuidString)") }
-    func patchMeeting(_ id: UUID, _ r: PatchMeetingRequest) async throws -> Meeting { try await send("PATCH", "meetings/\(id.uuidString)", body: r) }
-    func deleteMeeting(_ id: UUID) async throws { try await sendNoContent("DELETE", "meetings/\(id.uuidString)") }
-    func replaceActionItems(_ id: UUID, _ items: [ActionItem]) async throws -> Meeting { try await send("PUT", "meetings/\(id.uuidString)/action-items", body: items) }
-    func advise(meeting: UUID, item: UUID) async throws -> AdviceResponse {
+    public func createMeeting(_ r: CreateMeetingRequest) async throws -> Meeting { try await send("POST", "meetings", body: r) }
+    public func meeting(_ id: UUID) async throws -> MeetingDetail { try await send("GET", "meetings/\(id.uuidString)") }
+    public func patchMeeting(_ id: UUID, _ r: PatchMeetingRequest) async throws -> Meeting { try await send("PATCH", "meetings/\(id.uuidString)", body: r) }
+    public func deleteMeeting(_ id: UUID) async throws { try await sendNoContent("DELETE", "meetings/\(id.uuidString)") }
+    public func replaceActionItems(_ id: UUID, _ items: [ActionItem]) async throws -> Meeting { try await send("PUT", "meetings/\(id.uuidString)/action-items", body: items) }
+    public func advise(meeting: UUID, item: UUID) async throws -> AdviceResponse {
         try await send("POST", "meetings/\(meeting.uuidString)/action-items/\(item.uuidString)/advise")
     }
-    func pushTranscript(_ id: UUID, _ segments: [TranscriptSegment]) async throws -> MeetingDetail { try await send("PUT", "meetings/\(id.uuidString)/transcript", body: segments) }
-    func pushSummary(_ id: UUID, markdown: String) async throws -> MeetingDetail { try await send("PUT", "meetings/\(id.uuidString)/summary", body: PushSummaryRequest(markdown: markdown, provider: "Mac app")) }
-    func process(_ id: UUID, steps: [JobStep]) async throws -> JobInfo { try await send("POST", "meetings/\(id.uuidString)/process", body: ProcessRequest(steps: steps)) }
-    func job(_ id: UUID) async throws -> JobInfo { try await send("GET", "meetings/\(id.uuidString)/job") }
-    func audio(_ id: UUID) async throws -> [AudioTrackInfo] { try await send("GET", "meetings/\(id.uuidString)/audio") }
+    public func pushTranscript(_ id: UUID, _ segments: [TranscriptSegment]) async throws -> MeetingDetail { try await send("PUT", "meetings/\(id.uuidString)/transcript", body: segments) }
+    public func pushSummary(_ id: UUID, markdown: String) async throws -> MeetingDetail { try await send("PUT", "meetings/\(id.uuidString)/summary", body: PushSummaryRequest(markdown: markdown, provider: "client")) }
+    public func process(_ id: UUID, steps: [JobStep]) async throws -> JobInfo { try await send("POST", "meetings/\(id.uuidString)/process", body: ProcessRequest(steps: steps)) }
+    public func job(_ id: UUID) async throws -> JobInfo { try await send("GET", "meetings/\(id.uuidString)/job") }
 
-    func settings() async throws -> HubSettings { try await send("GET", "settings") }
-    func saveSettings(_ s: HubSettings) async throws -> HubSettings { try await send("PUT", "settings", body: s) }
-    func testSettings(_ s: HubSettings?) async throws -> TestResult {
+    /// Everything written on the hub after `revision`.
+    public func changes(since revision: Int64) async throws -> ChangeSet {
+        try await send("GET", "changes", query: ["since": String(revision)])
+    }
+    /// Send what this device changed about a meeting; the reply is the meeting as the hub now holds it.
+    public func edit(_ id: UUID, _ edit: MeetingEdit) async throws -> MeetingRecord {
+        try await send("POST", "meetings/\(id.uuidString)/edits", body: edit)
+    }
+    /// A pairing code for another device.
+    public func pairDevice(named name: String) async throws -> PairingCode {
+        let reply: PairDeviceResponse = try await send("POST", "devices", body: PairDeviceRequest(name: name))
+        guard let code = PairingCode(parsing: reply.pairingCode) else { throw HubClientError.badURL }
+        return code
+    }
+    public func audio(_ id: UUID) async throws -> [AudioTrackInfo] { try await send("GET", "meetings/\(id.uuidString)/audio") }
+
+    public func settings() async throws -> HubSettings { try await send("GET", "settings") }
+    public func saveSettings(_ s: HubSettings) async throws -> HubSettings { try await send("PUT", "settings", body: s) }
+    public func testSettings(_ s: HubSettings?) async throws -> TestResult {
         let data = try s.map { try wireEncoder.encode($0) }
         var req = try request("POST", "settings/test", body: data)
         req.timeoutInterval = 180
@@ -127,18 +143,35 @@ struct HubClient: Sendable {
     }
 
     /// Streams a file straight from disk. Retries are just another PUT; the hub replaces the earlier copy.
-    func upload(_ id: UUID, kind: AudioTrackKind, file: URL) async throws -> AudioTrackInfo {
-        let sha = try Self.sha256(of: file)
-        var req = try request("PUT", "meetings/\(id.uuidString)/audio/\(kind.rawValue)",
-                              headers: [HubAPI.fileNameHeader: file.lastPathComponent, HubAPI.checksumHeader: sha,
-                                        "Content-Type": "application/octet-stream"])
+    public func upload(_ id: UUID, kind: AudioTrackKind, file: URL) async throws -> AudioTrackInfo {
+        var req = try uploadRequest(id, kind: kind, file: file)
         req.timeoutInterval = 3600
         let (respData, response) = try await session.upload(for: req, fromFile: file)
         try check(respData, response)
         return try jsonDecoder.decode(AudioTrackInfo.self, from: respData)
     }
 
-    static func sha256(of file: URL) throws -> String {
+    /// The request that uploads `file` as one of a meeting's tracks, for a caller that runs it on a session of
+    /// its own (a background one, on a phone). With `creating`, the hub makes the meeting if it doesn't have it
+    /// yet; with `process`, it queues those steps once the file is stored — so the one request is the whole job.
+    public func uploadRequest(_ id: UUID, kind: AudioTrackKind, file: URL, creating meeting: CreateMeetingRequest? = nil,
+                              process steps: [JobStep] = []) throws -> URLRequest {
+        var headers = [HubAPI.fileNameHeader: file.lastPathComponent, HubAPI.checksumHeader: try Self.sha256(of: file),
+                       "Content-Type": "application/octet-stream"]
+        if let meeting { headers[HubAPI.meetingHeader] = try wireEncoder.encode(meeting).base64EncodedString() }
+        if !steps.isEmpty { headers[HubAPI.processHeader] = steps.map(\.rawValue).joined(separator: ",") }
+        return try request("PUT", "meetings/\(id.uuidString)/audio/\(kind.rawValue)", headers: headers)
+    }
+
+    /// What a response to a request run elsewhere means, in this client's terms.
+    public static func error(status: Int, body: Data) -> HubClientError? {
+        guard !(200..<300).contains(status) else { return nil }
+        var reason = String(decoding: body.prefix(300), as: UTF8.self)
+        if let obj = try? JSONSerialization.jsonObject(with: body) as? [String: Any], let r = obj["reason"] as? String { reason = r }
+        return .http(status, reason)
+    }
+
+    public static func sha256(of file: URL) throws -> String {
         let handle = try FileHandle(forReadingFrom: file)
         defer { try? handle.close() }
         var hasher = SHA256()
@@ -147,7 +180,7 @@ struct HubClient: Sendable {
     }
 
     /// Server-sent events. Ends (throws) when the connection drops; the caller reconnects.
-    func events() -> AsyncThrowingStream<HubEvent, Error> {
+    public func events() -> AsyncThrowingStream<HubEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
@@ -175,7 +208,7 @@ struct HubClient: Sendable {
     }
 }
 
-extension Error {
+public extension Error {
     /// True for "the hub can't be reached right now" as opposed to "the hub said no".
     var isConnectivityProblem: Bool {
         if let e = self as? URLError {

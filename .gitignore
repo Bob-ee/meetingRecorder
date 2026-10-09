@@ -1,5 +1,8 @@
 .build/
+.build-tests/
 build/
 *.xcodeproj
 .DS_Store
 .swiftpm/
+# Written by XcodeGen from Apps/iOS/project.yml
+Apps/iOS/Info.plist
