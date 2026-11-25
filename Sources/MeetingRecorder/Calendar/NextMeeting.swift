@@ -34,8 +34,10 @@ final class NextMeeting: ObservableObject {
     private var observer: NSObjectProtocol?
     /// One-shot, fires when the next flash window opens (the 20 s refresh is too coarse to catch it on time).
     private var flashWake: Timer?
-    /// Once a second while flashing: flips the phase and redraws the seconds countdown.
+    /// Once a second in a meeting's last minute: redraws the seconds countdown and flips the flash.
     private var flashTick: Timer?
+    /// The meeting whose flash was dismissed from the menu; it stays quiet, the next one still flashes.
+    private var dismissedFlash: String?
 
     /// How long before the start the label starts flashing, and how long after it keeps going.
     static let flashLead: TimeInterval = 60
@@ -73,7 +75,7 @@ final class NextMeeting: ObservableObject {
 
     func stop() {
         timer?.invalidate(); timer = nil
-        stopFlashing()
+        stopTicking()
         flashWake?.invalidate(); flashWake = nil
         if let observer { NotificationCenter.default.removeObserver(observer) }
         observer = nil
@@ -117,19 +119,24 @@ final class NextMeeting: ObservableObject {
         scheduleFlash()
     }
 
-    // MARK: Flashing
+    // MARK: The last minute
 
-    /// Start or stop the flash for the current `upcoming`, or set an alarm for when its window opens.
+    // From `flashLead` before the start to `flashTrail` after it, a one-second tick keeps the seconds
+    // countdown moving. Flashing rides on that tick, but it's optional: switched off in Settings or
+    // dismissed for this meeting, the countdown still ticks and only the red goes away.
+
+    /// Start or stop the tick for the current `upcoming`, or set an alarm for when its last minute begins.
     private func scheduleFlash() {
         flashWake?.invalidate(); flashWake = nil
-        guard settings.flashBeforeMeeting, let upcoming else { stopFlashing(); return }
+        guard let upcoming else { stopTicking(); return }
         let now = Date()
         let opens = upcoming.start.addingTimeInterval(-Self.flashLead)
         let closes = upcoming.start.addingTimeInterval(Self.flashTrail)
         if now >= opens && now < closes {
-            startFlashing()
+            startTicking()
+            updateFlashing()
         } else {
-            stopFlashing()
+            stopTicking()
             if now < opens {
                 let t = Timer(fire: opens, interval: 0, repeats: false) { [weak self] _ in
                     Task { @MainActor in self?.refresh() }
@@ -140,28 +147,46 @@ final class NextMeeting: ObservableObject {
         }
     }
 
-    private func startFlashing() {
+    /// "Stop flashing" in the menu: quiet for this meeting only. The countdown carries on.
+    func dismissFlash() {
+        guard let upcoming else { return }
+        dismissedFlash = Self.flashKey(upcoming)
+        updateFlashing()
+    }
+
+    /// A moved meeting is a new reminder, so the start time is part of the key.
+    private static func flashKey(_ m: Upcoming) -> String { "\(m.id)@\(m.start.timeIntervalSince1970)" }
+
+    private var shouldFlash: Bool {
+        guard flashTick != nil, settings.flashBeforeMeeting, let upcoming else { return false }
+        return Self.flashKey(upcoming) != dismissedFlash
+    }
+
+    private func updateFlashing() {
+        let on = shouldFlash
+        if on && !flashing { flashing = true; flashPhase = true }
+        if !on && flashing { flashing = false; flashPhase = false }
+    }
+
+    private func startTicking() {
         guard flashTick == nil else { return }
-        flashing = true
-        flashPhase = true
         let t = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.flashStep() }
+            Task { @MainActor in self?.tick() }
         }
         RunLoop.main.add(t, forMode: .common)
         flashTick = t
     }
 
-    private func flashStep() {
-        guard let upcoming, settings.flashBeforeMeeting,
-              Date() < upcoming.start.addingTimeInterval(Self.flashTrail) else { refresh(); return }
-        flashPhase.toggle()
+    private func tick() {
+        guard let upcoming, Date() < upcoming.start.addingTimeInterval(Self.flashTrail) else { refresh(); return }
+        updateFlashing()
+        if flashing { flashPhase.toggle() }
         render()
     }
 
-    private func stopFlashing() {
+    private func stopTicking() {
         flashTick?.invalidate(); flashTick = nil
-        if flashing { flashing = false }
-        if flashPhase { flashPhase = false }
+        updateFlashing()
     }
 
     private func render() {

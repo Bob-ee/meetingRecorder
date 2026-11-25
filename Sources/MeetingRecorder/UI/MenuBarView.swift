@@ -9,6 +9,10 @@ struct MenuBarView: View {
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
+        if next.flashing && !recorder.isRecording {
+            Button("Stop flashing") { next.dismissFlash() }
+            Divider()
+        }
         if let meeting = next.upcoming {
             Text(meeting.title)
             Text("\(Fmt.time.string(from: meeting.start)) · \(MenuBarTitle.countdown(to: meeting.start, from: Date()))")
