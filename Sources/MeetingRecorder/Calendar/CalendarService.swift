@@ -75,6 +75,12 @@ final class CalendarService: ObservableObject {
     var canReadEvents: Bool { eventAccess == .fullAccess }
     var canWriteReminders: Bool { reminderAccess == .fullAccess }
 
+    /// Re-read the permission — it can change in System Settings while we run.
+    func refreshAccess() {
+        let now = EKEventStore.authorizationStatus(for: .event)
+        if now != eventAccess { eventAccess = now }
+    }
+
     func requestAccess(_ to: Destination) async -> Bool {
         switch to {
         case .calendar:

@@ -41,8 +41,11 @@ struct MeetingRecorderApp: App {
                 .environmentObject(app)
                 .environmentObject(app.store)
                 .environmentObject(app.recorder)
+                .environmentObject(app.nextMeeting)
         } label: {
-            Image(systemName: app.recorder.isRecording ? "record.circle.fill" : "waveform.circle")
+            MenuBarLabel()
+                .environmentObject(app.recorder)
+                .environmentObject(app.nextMeeting)
         }
 
         Settings {

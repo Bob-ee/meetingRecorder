@@ -15,6 +15,13 @@ public enum Fmt {
         return f
     }()
 
+    public static let time: DateFormatter = {
+        let f = DateFormatter()
+        f.dateStyle = .none
+        f.timeStyle = .short
+        return f
+    }()
+
     public static let folderStamp: DateFormatter = {
         let f = DateFormatter()
         f.locale = Locale(identifier: "en_US_POSIX")

@@ -14,6 +14,7 @@ final class AppState: ObservableObject {
     let pipeline: Pipeline
     let hub: HubSync
     let detector: MeetingDetector
+    let nextMeeting: NextMeeting
     private let watcher = FolderWatcher()
     private var pendingSizes: [URL: Int] = [:]
 
@@ -32,6 +33,7 @@ final class AppState: ObservableObject {
         self.pipeline = Pipeline(store: store, settings: settings)
         self.hub = HubSync(store: store, settings: settings, pipeline: pipeline)
         self.detector = MeetingDetector()
+        self.nextMeeting = NextMeeting(settings: settings)
         pipeline.hub = hub
         store.onChange = { [weak self] change in self?.hub.noteChange(change) }
         hub.configure()
@@ -41,6 +43,7 @@ final class AppState: ObservableObject {
         detector.onDetected = { [weak self] app in self?.handleDetection(app) }
         if settings.autoDetect { detector.start() }
         pipeline.resumeUnfinished()
+        nextMeeting.start()
 
         watcher.onChange = { [weak self] in self?.scanDroppedFiles() }
         rewatchFolders()
@@ -112,6 +115,11 @@ final class AppState: ObservableObject {
     func setAutoDetect(_ on: Bool) {
         settings.autoDetect = on
         if on { detector.start() } else { detector.stop(); detectedApp = nil }
+    }
+
+    func setShowNextMeeting(_ on: Bool) {
+        settings.showNextMeeting = on
+        if on { nextMeeting.start() } else { nextMeeting.stop() }
     }
 
     // MARK: Window

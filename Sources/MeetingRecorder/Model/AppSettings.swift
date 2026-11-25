@@ -19,6 +19,8 @@ final class AppSettings: ObservableObject {
     @Published var hubLastSync: Double { didSet { defaults.set(hubLastSync, forKey: "hubLastSync") } }
     /// The calendar events were last added to (EventKit identifier); empty = the system default.
     @Published var calendarID: String { didSet { defaults.set(calendarID, forKey: "calendarID") } }
+    /// Show today's next meeting and a countdown next to the menu bar icon.
+    @Published var showNextMeeting: Bool { didSet { defaults.set(showNextMeeting, forKey: "showNextMeeting") } }
 
     init() {
         AppSettings.migrate(UserDefaults.standard)
@@ -36,6 +38,7 @@ final class AppSettings: ObservableObject {
         hubPairingCode = defaults.string(forKey: "hubPairingCode") ?? ""
         hubLastSync = defaults.double(forKey: "hubLastSync")
         calendarID = defaults.string(forKey: "calendarID") ?? ""
+        showNextMeeting = defaults.object(forKey: "showNextMeeting") as? Bool ?? true
     }
 
     /// Fixes up settings written by older builds. Runs before anything is read.
