@@ -46,10 +46,12 @@ public enum MenuBarTitle {
         return hard.trimmingCharacters(in: .whitespaces) + "…"
     }
 
-    /// "now", "in 5m", "in 1h", "in 1h 20m". `start` is when the meeting begins.
+    /// "now", "in 45s", "in 5m", "in 1h", "in 1h 20m". `start` is when the meeting begins.
+    /// Seconds only show in the last minute, when the label is redrawn every second.
     public static func countdown(to start: Date, from now: Date) -> String {
         let seconds = start.timeIntervalSince(now)
-        if seconds <= 30 { return "now" }
+        if seconds <= 0 { return "now" }
+        if seconds < 60 { return "in \(Int(seconds.rounded(.up)))s" }
         // Round up: at 4m10s away the meeting is "in 5m", never "in 4m" with it starting before the label changes.
         let minutes = Int((seconds / 60).rounded(.up))
         if minutes < 60 { return "in \(minutes)m" }

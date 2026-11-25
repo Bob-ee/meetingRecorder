@@ -95,6 +95,8 @@ struct SettingsView: View {
             Section("Menu bar") {
                 Toggle("Show the next meeting and a countdown", isOn: Binding(
                     get: { settings.showNextMeeting }, set: { app.setShowNextMeeting($0) }))
+                Toggle("Flash it in the last minute before the meeting", isOn: $settings.flashBeforeMeeting)
+                    .disabled(!settings.showNextMeeting)
                 Text("Today's next event from Calendar, with long titles shortened by Claude (Haiku) once and remembered. Uses every calendar in System Settings › Internet Accounts.")
                     .font(.caption).foregroundStyle(.secondary)
             }

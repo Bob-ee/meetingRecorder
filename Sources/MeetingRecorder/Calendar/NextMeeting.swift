@@ -22,12 +22,24 @@ final class NextMeeting: ObservableObject {
     /// The menu bar text, e.g. "Design review · in 12m". Nil = icon only.
     @Published private(set) var label: String?
     @Published private(set) var needsAccess = false
+    /// True from a minute before the meeting until a minute after it starts — "get off whatever you're doing".
+    @Published private(set) var flashing = false
+    /// Flips every second while `flashing`; the label swaps between its normal and highlighted look on it.
+    @Published private(set) var flashPhase = false
 
     private let settings: AppSettings
     private let calendar = CalendarService.shared
     private let shortener: TitleShortener
     private var timer: Timer?
     private var observer: NSObjectProtocol?
+    /// One-shot, fires when the next flash window opens (the 20 s refresh is too coarse to catch it on time).
+    private var flashWake: Timer?
+    /// Once a second while flashing: flips the phase and redraws the seconds countdown.
+    private var flashTick: Timer?
+
+    /// How long before the start the label starts flashing, and how long after it keeps going.
+    static let flashLead: TimeInterval = 60
+    static let flashTrail: TimeInterval = 60
 
     /// A meeting that started this recently still shows, as "now".
     private let graceAfterStart: TimeInterval = 5 * 60
@@ -61,6 +73,8 @@ final class NextMeeting: ObservableObject {
 
     func stop() {
         timer?.invalidate(); timer = nil
+        stopFlashing()
+        flashWake?.invalidate(); flashWake = nil
         if let observer { NotificationCenter.default.removeObserver(observer) }
         observer = nil
         upcoming = nil
@@ -79,10 +93,10 @@ final class NextMeeting: ObservableObject {
     }
 
     func refresh() {
-        guard settings.showNextMeeting else { upcoming = nil; label = nil; return }
+        guard settings.showNextMeeting else { stop(); return }
         calendar.refreshAccess()
         needsAccess = !calendar.canReadEvents
-        guard calendar.canReadEvents else { upcoming = nil; label = nil; return }
+        guard calendar.canReadEvents else { upcoming = nil; label = nil; scheduleFlash(); return }
 
         let now = Date()
         let cal = Calendar.current
@@ -100,6 +114,54 @@ final class NextMeeting: ObservableObject {
         // Shorten the whole rest of the day in one go, so the next one is ready before it's needed.
         shortener.prepare(events.map { Self.title(of: $0) })
         render()
+        scheduleFlash()
+    }
+
+    // MARK: Flashing
+
+    /// Start or stop the flash for the current `upcoming`, or set an alarm for when its window opens.
+    private func scheduleFlash() {
+        flashWake?.invalidate(); flashWake = nil
+        guard settings.flashBeforeMeeting, let upcoming else { stopFlashing(); return }
+        let now = Date()
+        let opens = upcoming.start.addingTimeInterval(-Self.flashLead)
+        let closes = upcoming.start.addingTimeInterval(Self.flashTrail)
+        if now >= opens && now < closes {
+            startFlashing()
+        } else {
+            stopFlashing()
+            if now < opens {
+                let t = Timer(fire: opens, interval: 0, repeats: false) { [weak self] _ in
+                    Task { @MainActor in self?.refresh() }
+                }
+                RunLoop.main.add(t, forMode: .common)
+                flashWake = t
+            }
+        }
+    }
+
+    private func startFlashing() {
+        guard flashTick == nil else { return }
+        flashing = true
+        flashPhase = true
+        let t = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.flashStep() }
+        }
+        RunLoop.main.add(t, forMode: .common)
+        flashTick = t
+    }
+
+    private func flashStep() {
+        guard let upcoming, settings.flashBeforeMeeting,
+              Date() < upcoming.start.addingTimeInterval(Self.flashTrail) else { refresh(); return }
+        flashPhase.toggle()
+        render()
+    }
+
+    private func stopFlashing() {
+        flashTick?.invalidate(); flashTick = nil
+        if flashing { flashing = false }
+        if flashPhase { flashPhase = false }
     }
 
     private func render() {

@@ -5,7 +5,10 @@ import XCTest
 final class MenuBarTitleTests: XCTestCase {
     func testCountdown() {
         let now = Date(timeIntervalSinceReferenceDate: 0)
-        XCTAssertEqual(MenuBarTitle.countdown(to: now.addingTimeInterval(10), from: now), "now")
+        XCTAssertEqual(MenuBarTitle.countdown(to: now, from: now), "now")
+        XCTAssertEqual(MenuBarTitle.countdown(to: now.addingTimeInterval(9.2), from: now), "in 10s")
+        XCTAssertEqual(MenuBarTitle.countdown(to: now.addingTimeInterval(59), from: now), "in 59s")
+        XCTAssertEqual(MenuBarTitle.countdown(to: now.addingTimeInterval(60), from: now), "in 1m")
         XCTAssertEqual(MenuBarTitle.countdown(to: now.addingTimeInterval(-120), from: now), "now")
         XCTAssertEqual(MenuBarTitle.countdown(to: now.addingTimeInterval(250), from: now), "in 5m")
         XCTAssertEqual(MenuBarTitle.countdown(to: now.addingTimeInterval(3600), from: now), "in 1h")
